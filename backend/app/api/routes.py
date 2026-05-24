@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.agents.runner import MockWorkflowRunner, default_dag
@@ -9,6 +9,7 @@ from app.services.llm_client import LlmClient
 from app.services.report_service import ReportService
 from app.services.task_service import TaskService
 from app.services.trace_service import TraceService
+from app.services.web_search_client import WebSearchClient
 
 router = APIRouter(prefix="/api")
 
@@ -21,6 +22,22 @@ def llm_status():
 @router.post("/llm/test")
 def test_llm_connection():
     return LlmClient().test_connection()
+
+
+@router.get("/collector/status")
+def collector_status():
+    return WebSearchClient().status()
+
+
+@router.get("/search/status")
+def search_status():
+    return WebSearchClient().status()
+
+
+@router.post("/search/test")
+def test_search_connection(payload: dict = Body(default_factory=dict)):
+    query = payload.get("query") or "飞书 B2B SaaS 功能 定价 官网"
+    return WebSearchClient().test_connection(str(query))
 
 
 @router.post("/tasks")
@@ -47,6 +64,7 @@ def run_task(
     demo_mode: str = Query("normal", pattern="^(normal|qa_missing_evidence|qa_invalid_extraction|qa_bad_report)$"),
     auto_rework: bool = Query(False),
     writer_mode: str = Query("mock", pattern="^(mock|llm)$"),
+    collector_mode: str = Query("mock", pattern="^(mock|web)$"),
     db: Session = Depends(get_db),
 ):
     try:
@@ -55,6 +73,7 @@ def run_task(
             demo_mode=demo_mode,
             auto_rework=auto_rework,
             writer_mode=writer_mode,
+            collector_mode=collector_mode,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Task not found") from exc

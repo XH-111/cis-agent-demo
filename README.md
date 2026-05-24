@@ -2,7 +2,7 @@
 
 这是一个面向 CIS AI 挑战赛的“多 Agent 竞品分析系统”初步 Demo。
 
-当前版本使用确定性的 Mock Agent，不调用真实 LLM，不执行真实爬虫，不接入 RAG 或向量数据库。它的目标是先把可演示、可替换、可扩展的工程骨架搭好：Schema、API、持久化、Mock 工作流、QA 打回闭环、证据绑定、Trace 可观测、前端页面和测试。
+当前版本默认使用确定性的 Mock Agent，并提供可选的最小真实 LLM ReportWriter 与最小 Web Collector。系统不接入 RAG 或向量数据库，不执行复杂爬虫。它的目标是先把可演示、可替换、可扩展的工程骨架搭好：Schema、API、持久化、Mock 工作流、QA 打回闭环、证据绑定、Trace 可观测、前端页面和测试。
 
 ## 架构概览
 
@@ -109,6 +109,9 @@ npm run build
 - `POST /api/tasks/{task_id}/run?demo_mode=qa_missing_evidence`：演示 QA 打回 CollectorAgent
 - `POST /api/tasks/{task_id}/run?demo_mode=qa_invalid_extraction`：演示 QA 打回 AnalystAgent
 - `POST /api/tasks/{task_id}/run?demo_mode=qa_bad_report`：演示 QA 打回 ReportWriterAgent
+- `POST /api/tasks/{task_id}/run?collector_mode=mock`：使用稳定 Mock Evidence
+- `POST /api/tasks/{task_id}/run?collector_mode=web`：使用最小 Web Collector，失败时 fallback 到 Mock
+- `GET /api/collector/status`：查询 Web Collector 配置状态
 - `GET /api/tasks/{task_id}/dag`：查询 DAG 节点和边
 - `GET /api/tasks/{task_id}/traces`：查询 Trace 记录
 - `GET /api/tasks/{task_id}/evidence`：查询 Evidence 列表
@@ -165,6 +168,60 @@ LLM_MODEL=
 - LLM 返回非法 JSON 时，会记录失败 Trace，然后 fallback 到 Mock ReportWriter。
 - LLM 返回的 Claim 缺少 `evidence_ids` 时，不会静默修复，会进入 QA failed，并路由回 `ReportWriterAgent`。
 
+## Collector 模式
+
+系统默认使用 Mock Collector，适合现场稳定演示：
+
+```text
+POST /api/tasks/{task_id}/run?collector_mode=mock
+```
+
+也可以选择最小 Web Collector：
+
+```text
+POST /api/tasks/{task_id}/run?collector_mode=web
+```
+
+前端“运行 Demo 工作流”旁边提供：
+
+- `Mock Collector`
+- `Web Collector`
+
+Web Collector 当前只调用配置好的公开搜索 API，把搜索结果转成结构化 `Evidence`，不做复杂爬虫、不绕过 robots.txt、不采集隐私数据、不复制长篇网页内容。
+
+### 配置 Web Collector
+
+复制 `.env.example` 并按本地环境设置：
+
+```bash
+SEARCH_PROVIDER=tavily
+SEARCH_API_KEY=
+SEARCH_BASE_URL=https://api.tavily.com
+SEARCH_TIMEOUT=15
+SEARCH_MAX_RESULTS=5
+```
+
+当前优先支持 Tavily Search API。请求方式为 `POST {SEARCH_BASE_URL}/search`，只请求搜索结果的 `title`、`url`、`content`、`score` 等摘要字段，不请求 `raw_content`。
+
+### Fallback 行为
+
+- 没有 `SEARCH_API_KEY` 或 `SEARCH_BASE_URL` 时，即使选择 `collector_mode=web`，系统也会自动 fallback 到 Mock Collector。
+- Web search 超时或返回异常时，workflow 不会崩溃，会 fallback 到 Mock Evidence。
+- Trace Viewer 展开 `CollectorAgent` 后可以查看 `collector_mode_requested`、`collector_mode_used`、`web_search_attempted`、`web_search_success`、`query_count`、`evidence_count`、`fallback_used` 和 `fallback_reason`。
+
+### Search API
+
+- `GET /api/search/status`：查看搜索配置状态，不返回 API Key。
+- `POST /api/search/test`：测试搜索连接。
+
+测试请求示例：
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/search/test ^
+  -H "Content-Type: application/json" ^
+  -d "{\"query\":\"飞书 B2B SaaS 功能 定价 官网\"}"
+```
+
 ## 后续接入真实 Agent 的位置
 
 推荐从 `backend/app/agents/runner.py` 开始接入 LangGraph。
@@ -195,7 +252,7 @@ chcp 65001
 
 ## 合规说明
 
-当前 Demo 使用 `example.com` 和 `mock://` 的模拟公开来源，不采集真实网站或个人数据。
+当前 Demo 默认使用 `example.com` 和 `mock://` 的模拟公开来源。启用 Web Collector 时，只应采集合规公开搜索结果，不采集个人隐私数据，不复制长篇受版权保护内容。
 
 生产环境接入真实采集时，需要遵守：
 

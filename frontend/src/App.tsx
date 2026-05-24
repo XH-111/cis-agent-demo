@@ -9,7 +9,7 @@ import { ReportView } from "./components/ReportView";
 import { TaskForm } from "./components/TaskForm";
 import { TaskList } from "./components/TaskList";
 import { TraceViewer } from "./components/TraceViewer";
-import type { Claim, Dag, DemoMode, Evidence, LlmStatus, QaResult, Report, Task, TraceRecord, WriterDiagnostics } from "./types";
+import type { Claim, CollectorDiagnostics, CollectorStatus, Dag, DemoMode, Evidence, LlmStatus, QaResult, Report, SearchTestResult, Task, TraceRecord, WriterDiagnostics } from "./types";
 import { Pill } from "./types";
 
 export default function App() {
@@ -25,16 +25,25 @@ export default function App() {
   const [demoMode, setDemoMode] = useState<DemoMode>("normal");
   const [autoRework, setAutoRework] = useState(false);
   const [writerMode, setWriterMode] = useState<"mock" | "llm">("mock");
+  const [collectorMode, setCollectorMode] = useState<"mock" | "web">("mock");
   const [llmStatus, setLlmStatus] = useState<LlmStatus>();
+  const [collectorStatus, setCollectorStatus] = useState<CollectorStatus>();
   const [llmTesting, setLlmTesting] = useState(false);
+  const [searchTesting, setSearchTesting] = useState(false);
+  const [searchTestResult, setSearchTestResult] = useState<SearchTestResult>();
 
   useEffect(() => {
     loadTasks();
     loadLlmStatus();
+    loadCollectorStatus();
   }, []);
 
   async function loadLlmStatus() {
     await api.llmStatus().then(setLlmStatus).catch(() => setLlmStatus(undefined));
+  }
+
+  async function loadCollectorStatus() {
+    await api.collectorStatus().then(setCollectorStatus).catch(() => setCollectorStatus(undefined));
   }
 
   async function loadTasks(selectTaskId?: string) {
@@ -81,7 +90,7 @@ export default function App() {
     if (!task) return;
     setBusy(true);
     try {
-      const result = await api.runTask(task.task_id, demoMode, autoRework, writerMode) as { report?: Report | null };
+      const result = await api.runTask(task.task_id, demoMode, autoRework, writerMode, collectorMode) as { report?: Report | null };
       await loadTasks(task.task_id);
       if (!result.report) {
         setReport(undefined);
@@ -104,7 +113,19 @@ export default function App() {
     }
   }
 
+  async function testSearch() {
+    setSearchTesting(true);
+    try {
+      const query = task ? `${task.competitors[0]} ${task.industry} 功能 定价 官网` : "飞书 B2B SaaS 功能 定价 官网";
+      setSearchTestResult(await api.testSearch(query));
+      await loadCollectorStatus();
+    } finally {
+      setSearchTesting(false);
+    }
+  }
+
   const writerDiagnostics = report?.json_report.writer_diagnostics as WriterDiagnostics | undefined;
+  const collectorDiagnostics = latestCollectorDiagnostics(traces);
   const llmStatusLabel = !llmStatus
     ? "LLM 状态未知"
     : !llmStatus.api_key_configured
@@ -120,6 +141,25 @@ export default function App() {
       : writerDiagnostics.writer_mode_used === "llm"
         ? `LLM ReportWriter 调用成功，耗时 ${writerDiagnostics.llm_elapsed_time_ms ?? 0}ms，模型：${writerDiagnostics.llm_model ?? "未记录"}。`
         : `本次使用 ${writerDiagnostics.writer_mode_used ?? "mock"} ReportWriter。`
+    : undefined;
+  const collectorDiagnosticMessage = collectorDiagnostics?.fallback_used
+    ? `Web Collector 调用失败，本次 fallback 到 Mock Evidence。原因：${collectorDiagnostics.fallback_reason ?? "未知"}`
+    : collectorDiagnostics?.collector_mode_used === "web"
+      ? `Web Collector 调用成功，采集 Evidence ${collectorDiagnostics.evidence_count ?? 0} 条。`
+      : undefined;
+  const searchStatusLabel = !collectorStatus
+    ? "搜索状态未知"
+    : !collectorStatus.api_key_configured
+      ? "未配置"
+      : searchTestResult?.success
+        ? "测试成功"
+        : searchTestResult && !searchTestResult.success
+          ? "测试失败"
+          : "已配置";
+  const searchTestMessage = searchTestResult
+    ? searchTestResult.success
+      ? `搜索工具已连接，返回 ${searchTestResult.result_count} 条结果。`
+      : `搜索工具调用失败：${searchTestResult.error_type ?? searchTestResult.error_message ?? "未知错误"}，本次 Web Collector 会 fallback 到 Mock。`
     : undefined;
 
   return (
@@ -172,8 +212,19 @@ export default function App() {
             <option value="mock">Mock ReportWriter</option>
             <option value="llm">LLM ReportWriter</option>
           </select>
+          <select
+            className="rounded border border-line bg-white px-3 py-2 text-sm"
+            value={collectorMode}
+            onChange={(event) => setCollectorMode(event.target.value as "mock" | "web")}
+          >
+            <option value="mock">Mock Collector</option>
+            <option value="web">Web Collector</option>
+          </select>
           <span className="rounded border border-line bg-white px-3 py-2 text-sm">
             LLM：{llmStatusLabel}
+          </span>
+          <span className="rounded border border-line bg-white px-3 py-2 text-sm">
+            搜索：{searchStatusLabel}
           </span>
           <button
             type="button"
@@ -182,6 +233,14 @@ export default function App() {
             className="rounded border border-line bg-white px-3 py-2 text-sm font-semibold disabled:opacity-50"
           >
             {llmTesting ? "测试中..." : "测试 LLM 连接"}
+          </button>
+          <button
+            type="button"
+            onClick={testSearch}
+            disabled={searchTesting}
+            className="rounded border border-line bg-white px-3 py-2 text-sm font-semibold disabled:opacity-50"
+          >
+            {searchTesting ? "测试中..." : "测试搜索连接"}
           </button>
           <button onClick={run} disabled={!task || busy} className="inline-flex items-center gap-2 rounded bg-accent px-4 py-2 font-semibold text-white disabled:opacity-50">
             <Play size={16} /> 运行 Demo 工作流
@@ -197,7 +256,7 @@ export default function App() {
           <span className="text-sm text-slate-600">执行所选 Mock Agent DAG，并生成 DAG、报告、证据、QA 和 Trace。</span>
         </div>
 
-        {(llmStatus || writerDiagnosticMessage) && (
+        {(llmStatus || collectorStatus || writerDiagnosticMessage || collectorDiagnosticMessage) && (
           <div className="mb-4 rounded border border-line bg-white p-3 text-sm">
             <div className="flex flex-wrap gap-x-5 gap-y-2">
               <span>LLM Provider：{llmStatus?.llm_provider ?? "未读取"}</span>
@@ -205,8 +264,17 @@ export default function App() {
               <span>Base URL：{llmStatus?.base_url_configured ? "已配置" : "未配置"}</span>
               <span>API Key：{llmStatus?.api_key_configured ? "已配置" : "未配置"}</span>
               <span>状态：{llmStatusLabel}</span>
+              <span>Search Provider：{collectorStatus?.search_provider ?? "未读取"}</span>
+              <span>Search API Key：{collectorStatus?.api_key_configured ? "已配置" : "未配置"}</span>
+              <span>Web Collector：{collectorStatus?.enabled ? "已启用" : "未启用"}</span>
+              <span>搜索状态：{searchStatusLabel}</span>
             </div>
             {llmStatus?.last_error && <div className="mt-2 text-danger">测试错误：{llmStatus.last_error}</div>}
+            {searchTestMessage && (
+              <div className={`mt-2 rounded border px-3 py-2 ${searchTestResult?.success ? "border-green-300 bg-green-50 text-success" : "border-amber-300 bg-amber-50 text-warning"}`}>
+                {searchTestMessage}
+              </div>
+            )}
             {writerDiagnostics && (
               <div className="mt-2 grid gap-2 md:grid-cols-4">
                 <span>requested：{writerDiagnostics.writer_mode_requested ?? "-"}</span>
@@ -218,6 +286,11 @@ export default function App() {
             {writerDiagnosticMessage && (
               <div className={`mt-2 rounded border px-3 py-2 ${writerDiagnostics?.fallback_used ? "border-amber-300 bg-amber-50 text-warning" : "border-green-300 bg-green-50 text-success"}`}>
                 {writerDiagnosticMessage}
+              </div>
+            )}
+            {collectorDiagnosticMessage && (
+              <div className={`mt-2 rounded border px-3 py-2 ${collectorDiagnostics?.fallback_used ? "border-amber-300 bg-amber-50 text-warning" : "border-green-300 bg-green-50 text-success"}`}>
+                {collectorDiagnosticMessage}
               </div>
             )}
           </div>
@@ -233,4 +306,15 @@ export default function App() {
       </div>
     </main>
   );
+}
+
+function latestCollectorDiagnostics(traces: TraceRecord[]): CollectorDiagnostics | undefined {
+  const trace = [...traces].reverse().find((item) => item.agent_name === "CollectorAgent");
+  if (!trace?.output_summary) return undefined;
+  try {
+    const parsed = JSON.parse(trace.output_summary) as CollectorDiagnostics;
+    return parsed.collector_mode_requested ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
 }

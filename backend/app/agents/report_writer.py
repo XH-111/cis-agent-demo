@@ -1,5 +1,7 @@
 from typing import Any
 
+from pydantic import ValidationError
+
 from app.agents.base import AgentExecutionError, AgentOutputValidationError, run_with_trace
 from app.schemas import Claim, QaResult, Report, ReportWriterInput, ReportWriterOutput
 from app.services.llm_client import LlmClient, parse_llm_json
@@ -42,6 +44,9 @@ class ReportWriterAgent:
             "llm_error_type": None,
             "llm_error_message": None,
             "llm_response_preview": None,
+            "llm_schema_validation_success": None,
+            "llm_schema_validation_errors": [],
+            "llm_category_normalization_count": 0,
             "fallback_used": False,
             "llm_fallback_reason": None,
         }
@@ -175,6 +180,8 @@ class ReportWriterAgent:
                     {
                         "llm_error_type": exc.__class__.__name__,
                         "llm_error_message": str(exc),
+                        "llm_schema_validation_success": False,
+                        "llm_schema_validation_errors": [str(exc)],
                         "fallback_used": True,
                         "llm_fallback_reason": f"LLM returned invalid JSON: {exc}",
                     }
@@ -187,7 +194,13 @@ class ReportWriterAgent:
 
             claims_payload = payload.get("claims")
             if not isinstance(claims_payload, list):
-                diagnostics.update({"llm_error_message": "LLM output missing claims list."})
+                diagnostics.update(
+                    {
+                        "llm_error_message": "LLM output missing claims list.",
+                        "llm_schema_validation_success": False,
+                        "llm_schema_validation_errors": ["LLM output missing claims list."],
+                    }
+                )
                 raise AgentOutputValidationError(
                     "LLM output missing claims list.",
                     output={"claims": [], "markdown": payload.get("markdown_report", ""), "diagnostics": diagnostics},
@@ -199,6 +212,8 @@ class ReportWriterAgent:
                         "writer_mode_used": "llm",
                         "fallback_used": False,
                         "llm_error_message": "LLM claim missing evidence_ids.",
+                        "llm_schema_validation_success": False,
+                        "llm_schema_validation_errors": ["LLM claim missing evidence_ids."],
                     }
                 )
                 raise AgentOutputValidationError(
@@ -206,17 +221,42 @@ class ReportWriterAgent:
                     output={"claims": claims_payload, "markdown": payload.get("markdown_report", ""), "diagnostics": diagnostics},
                 )
 
-            claims = [
-                Claim(
-                    claim_id=claim["claim_id"],
-                    text=claim["text"],
-                    evidence_ids=claim["evidence_ids"],
-                    category=claim.get("category", "recommendation"),
-                    confidence=claim.get("confidence", 0.7),
+            normalized_count = sum(1 for claim in claims_payload if not claim.get("category"))
+            try:
+                claims = [
+                    Claim(
+                        claim_id=claim["claim_id"],
+                        text=claim["text"],
+                        evidence_ids=claim["evidence_ids"],
+                        category=claim.get("category", "recommendation"),
+                        confidence=claim.get("confidence", 0.7),
+                    )
+                    for claim in claims_payload
+                ]
+            except (KeyError, ValidationError) as exc:
+                diagnostics.update(
+                    {
+                        "writer_mode_used": "llm",
+                        "fallback_used": False,
+                        "llm_error_type": exc.__class__.__name__,
+                        "llm_error_message": str(exc),
+                        "llm_schema_validation_success": False,
+                        "llm_schema_validation_errors": [str(exc)],
+                        "llm_category_normalization_count": normalized_count,
+                    }
                 )
-                for claim in claims_payload
-            ]
-            diagnostics.update({"writer_mode_used": "llm"})
+                raise AgentOutputValidationError(
+                    f"LLM output failed Claim schema validation: {exc}",
+                    output={"claims": claims_payload, "markdown": payload.get("markdown_report", ""), "diagnostics": diagnostics},
+                ) from exc
+            diagnostics.update(
+                {
+                    "writer_mode_used": "llm",
+                    "llm_schema_validation_success": True,
+                    "llm_schema_validation_errors": [],
+                    "llm_category_normalization_count": normalized_count,
+                }
+            )
             report = Report(
                 task_id=task.task_id,
                 markdown=payload.get("markdown_report", ""),

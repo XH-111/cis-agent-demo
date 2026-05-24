@@ -21,10 +21,12 @@ class PlannerOutput(BaseModel):
 class CollectorInput(BaseModel):
     task: Task
     retry_count: int = 0
+    collector_mode: Literal["mock", "web"] = "mock"
 
 
 class CollectorOutput(BaseModel):
     evidence: list[Evidence]
+    diagnostics: dict = Field(default_factory=dict)
 
 
 class AnalystInput(BaseModel):

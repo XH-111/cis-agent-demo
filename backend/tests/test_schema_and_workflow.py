@@ -1,5 +1,7 @@
+import json
 import pytest
 import time
+import httpx
 from pydantic import ValidationError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -37,6 +39,7 @@ from app.services.llm_client import LlmResponse
 from app.services.report_service import ReportService
 from app.services.task_service import TaskService
 from app.services.trace_service import TraceService
+from app.services.web_search_client import SearchResult, WebSearchClient, WebSearchResponse
 
 
 @pytest.fixture()
@@ -233,6 +236,51 @@ class FakeLlmClient:
         )
 
 
+class FakeWebSearchClient:
+    provider = "fake-search"
+    api_key = "fake-key"
+    base_url = "https://fake-search.local"
+
+    def __init__(self, *, fail: bool = False):
+        self.fail = fail
+
+    def search(self, query: str, limit: int = 5):
+        if self.fail:
+            return WebSearchResponse(
+                available=False,
+                attempted=True,
+                success=False,
+                fallback_reason="Web search failed: timeout",
+                error_type="TimeoutError",
+                error_message="timeout",
+            )
+        return WebSearchResponse(
+            available=True,
+            attempted=True,
+            success=True,
+            elapsed_time_ms=12,
+            results=[
+                SearchResult(title="Official pricing", url="https://official.example.com/pricing", snippet="Official pricing and features summary."),
+                SearchResult(title="Docs", url="https://docs.example.com/features", snippet="Documentation describes collaboration features."),
+            ],
+        )
+
+
+class FakeHttpResponse:
+    def __init__(self, payload: dict, status_code: int = 200):
+        self.payload = payload
+        self.status_code = status_code
+        self.text = json.dumps(payload)
+        self.request = httpx.Request("POST", "https://api.tavily.com/search")
+
+    def json(self):
+        return self.payload
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise httpx.HTTPStatusError("Client error", request=self.request, response=httpx.Response(self.status_code, text=self.text, request=self.request))
+
+
 def test_llm_writer_success_records_diagnostics_and_elapsed_time(db_session):
     task = make_task(db_session)
     trace_service = TraceService(db_session)
@@ -253,8 +301,173 @@ def test_llm_writer_success_records_diagnostics_and_elapsed_time(db_session):
     assert diagnostics["writer_mode_used"] == "llm"
     assert diagnostics["llm_call_attempted"] is True
     assert diagnostics["llm_call_success"] is True
+    assert diagnostics["llm_schema_validation_success"] is True
+    assert diagnostics["llm_schema_validation_errors"] == []
+    assert diagnostics["llm_category_normalization_count"] == 1
     traces = [trace for trace in trace_service.list_for_task(task.task_id) if trace.agent_name == "ReportWriterAgent"]
     assert traces[-1].elapsed_time_ms > 0
+    trace_diagnostics = json.loads(traces[-1].output_summary)
+    assert trace_diagnostics["llm_schema_validation_success"] is True
+
+
+def test_collector_mode_mock_workflow_still_passes(db_session):
+    task = make_task(db_session)
+    result = MockWorkflowRunner(db_session).run(task.task_id, collector_mode="mock")
+    assert result["qa_result"].status == "passed"
+    collector_trace = next(trace for trace in TraceService(db_session).list_for_task(task.task_id) if trace.agent_name == "CollectorAgent")
+    diagnostics = json.loads(collector_trace.output_summary)
+    assert diagnostics["collector_mode_requested"] == "mock"
+    assert diagnostics["collector_mode_used"] == "mock"
+
+
+def test_collector_web_without_api_key_falls_back_to_mock(db_session, monkeypatch):
+    monkeypatch.setenv("SEARCH_PROVIDER", "tavily")
+    monkeypatch.delenv("SEARCH_API_KEY", raising=False)
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    output = CollectorAgent(trace_service).run(CollectorInput(task=task, collector_mode="web"))
+    assert output.evidence
+    assert output.diagnostics["collector_mode_requested"] == "web"
+    assert output.diagnostics["collector_mode_used"] == "mock"
+    assert output.diagnostics["fallback_used"] is True
+    assert output.diagnostics["fallback_reason"]
+
+
+def test_tavily_results_convert_to_evidence(db_session, monkeypatch):
+    monkeypatch.setenv("SEARCH_PROVIDER", "tavily")
+    monkeypatch.setenv("SEARCH_API_KEY", "Bearer fake-search-key")
+    monkeypatch.setenv("SEARCH_BASE_URL", "https://api.tavily.com")
+    monkeypatch.setenv("SEARCH_MAX_RESULTS", "5")
+
+    def fake_post(url, headers, json, timeout):
+        assert url == "https://api.tavily.com/search"
+        assert headers["Authorization"] == "Bearer fake-search-key"
+        assert json["include_raw_content"] is False
+        return FakeHttpResponse(
+            {
+                "results": [
+                    {
+                        "title": "Feishu official pricing",
+                        "url": "https://www.feishu.cn/pricing",
+                        "content": "飞书官网定价和功能页面摘要，介绍企业协作功能。",
+                        "score": 0.92,
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr("app.services.web_search_client.httpx.post", fake_post)
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    output = CollectorAgent(trace_service, web_search_client=WebSearchClient()).run(
+        CollectorInput(task=task, collector_mode="web")
+    )
+    assert output.diagnostics["collector_mode_used"] == "web"
+    assert output.evidence[0].source_type == "public_web"
+    assert output.evidence[0].url == "https://www.feishu.cn/pricing"
+    assert output.evidence[0].confidence >= 0.85
+
+
+def test_tavily_empty_results_fallback_to_mock(db_session, monkeypatch):
+    monkeypatch.setenv("SEARCH_PROVIDER", "tavily")
+    monkeypatch.setenv("SEARCH_API_KEY", "fake-search-key")
+    monkeypatch.setenv("SEARCH_BASE_URL", "https://api.tavily.com")
+
+    def fake_post(url, headers, json, timeout):
+        return FakeHttpResponse({"results": []})
+
+    monkeypatch.setattr("app.services.web_search_client.httpx.post", fake_post)
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    output = CollectorAgent(trace_service, web_search_client=WebSearchClient()).run(
+        CollectorInput(task=task, collector_mode="web")
+    )
+    assert output.diagnostics["collector_mode_used"] == "mock"
+    assert output.diagnostics["fallback_used"] is True
+    assert "no usable" in output.diagnostics["fallback_reason"]
+
+
+def test_tavily_401_fallback_to_mock_and_records_reason(db_session, monkeypatch):
+    monkeypatch.setenv("SEARCH_PROVIDER", "tavily")
+    monkeypatch.setenv("SEARCH_API_KEY", "fake-search-key")
+    monkeypatch.setenv("SEARCH_BASE_URL", "https://api.tavily.com")
+
+    def fake_post(url, headers, json, timeout):
+        return FakeHttpResponse({"detail": "Unauthorized"}, status_code=401)
+
+    monkeypatch.setattr("app.services.web_search_client.httpx.post", fake_post)
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    output = CollectorAgent(trace_service, web_search_client=WebSearchClient()).run(
+        CollectorInput(task=task, collector_mode="web")
+    )
+    assert output.diagnostics["collector_mode_used"] == "mock"
+    assert output.diagnostics["fallback_used"] is True
+    assert "401" in output.diagnostics["fallback_reason"] or "Client error" in output.diagnostics["fallback_reason"]
+
+
+def test_search_status_does_not_return_api_key(monkeypatch):
+    monkeypatch.setenv("SEARCH_PROVIDER", "tavily")
+    monkeypatch.setenv("SEARCH_API_KEY", "secret-search-key")
+    monkeypatch.setenv("SEARCH_BASE_URL", "https://api.tavily.com")
+    status = WebSearchClient().status()
+    assert status["search_provider"] == "tavily"
+    assert status["api_key_configured"] is True
+    assert "secret-search-key" not in json.dumps(status)
+    assert status["max_results"] == 5
+
+
+def test_collector_web_results_convert_to_evidence(db_session):
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    output = CollectorAgent(trace_service, web_search_client=FakeWebSearchClient()).run(
+        CollectorInput(task=task, collector_mode="web")
+    )
+    assert output.evidence
+    assert output.evidence[0].source_type == "public_web"
+    assert output.evidence[0].url == "https://official.example.com/pricing"
+    assert output.evidence[0].confidence == 0.9
+    assert output.diagnostics["collector_mode_used"] == "web"
+    assert output.diagnostics["web_search_success"] is True
+
+
+def test_collector_web_timeout_does_not_crash_workflow(db_session):
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    output = CollectorAgent(trace_service, web_search_client=FakeWebSearchClient(fail=True)).run(
+        CollectorInput(task=task, collector_mode="web")
+    )
+    assert output.evidence
+    assert output.diagnostics["collector_mode_used"] == "mock"
+    assert output.diagnostics["fallback_used"] is True
+    assert "timeout" in output.diagnostics["fallback_reason"]
+
+
+def test_collector_trace_records_mode_and_fallback_reason(db_session):
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    CollectorAgent(trace_service, web_search_client=FakeWebSearchClient(fail=True)).run(
+        CollectorInput(task=task, collector_mode="web")
+    )
+    collector_trace = next(trace for trace in trace_service.list_for_task(task.task_id) if trace.agent_name == "CollectorAgent")
+    diagnostics = json.loads(collector_trace.output_summary)
+    assert diagnostics["collector_mode_requested"] == "web"
+    assert diagnostics["collector_mode_used"] == "mock"
+    assert diagnostics["fallback_reason"]
+
+
+def test_collector_mode_web_and_writer_mode_llm_parameters_both_pass(db_session, monkeypatch):
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    task = make_task(db_session)
+    result = MockWorkflowRunner(db_session).run(task.task_id, collector_mode="web", writer_mode="llm")
+    assert result["qa_result"].status == "passed"
+    traces = TraceService(db_session).list_for_task(task.task_id)
+    collector_trace = next(trace for trace in traces if trace.agent_name == "CollectorAgent")
+    writer_trace = next(trace for trace in traces if trace.agent_name == "ReportWriterAgent")
+    collector_diagnostics = json.loads(collector_trace.output_summary)
+    writer_diagnostics = json.loads(writer_trace.output_summary)
+    assert collector_diagnostics["collector_mode_requested"] == "web"
+    assert writer_diagnostics["writer_mode_requested"] == "llm"
 
 
 def test_llm_claim_missing_evidence_routes_to_report_writer(db_session):
@@ -275,6 +488,45 @@ def test_llm_claim_missing_evidence_routes_to_report_writer(db_session):
     assert qa_result.status == "failed"
     assert qa_result.route_to == "ReportWriterAgent"
     assert any(trace.schema_validation_result == "failed" for trace in trace_service.list_for_task(task.task_id))
+    failed_trace = next(trace for trace in trace_service.list_for_task(task.task_id) if trace.agent_name == "ReportWriterAgent" and trace.schema_validation_result == "failed")
+    trace_diagnostics = json.loads(failed_trace.output_summary)
+    assert trace_diagnostics["llm_schema_validation_success"] is False
+    assert trace_diagnostics["llm_schema_validation_errors"]
+
+
+def test_llm_claim_schema_failure_records_validation_diagnostics(db_session):
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    evidence = CollectorAgent(trace_service).run(CollectorInput(task=task)).evidence
+    analysis = AnalystAgent(trace_service).run(AnalystInput(task=task, evidence=evidence))
+    writer = ReportWriterAgent(
+        trace_service,
+        llm_client=FakeLlmClient(
+            '{"markdown_report":"# Bad","json_report":{},"claims":[{"claim_id":"c1","text":"bad category","category":"任务基础信息","evidence_ids":["'
+            + evidence[0].evidence_id
+            + '"]}]}'
+        ),
+    )
+    writer_output = writer.run(ReportWriterInput(task=task, knowledge=analysis, evidence=evidence, writer_mode="llm"))
+    assert writer_output.report is None
+    traces = trace_service.list_for_task(task.task_id)
+    failed_trace = next(trace for trace in traces if trace.agent_name == "ReportWriterAgent" and trace.schema_validation_result == "failed")
+    trace_diagnostics = json.loads(failed_trace.output_summary)
+    assert trace_diagnostics["llm_schema_validation_success"] is False
+    assert trace_diagnostics["llm_schema_validation_errors"]
+    assert trace_diagnostics["llm_category_normalization_count"] == 0
+
+
+def test_mock_writer_schema_diagnostics_are_null(db_session):
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    evidence = CollectorAgent(trace_service).run(CollectorInput(task=task)).evidence
+    analysis = AnalystAgent(trace_service).run(AnalystInput(task=task, evidence=evidence))
+    writer_output = ReportWriterAgent(trace_service).run(ReportWriterInput(task=task, knowledge=analysis, evidence=evidence))
+    assert writer_output.report is not None
+    diagnostics = writer_output.report.json_report["writer_diagnostics"]
+    assert diagnostics["writer_mode_used"] == "mock"
+    assert diagnostics["llm_schema_validation_success"] is None
 
 
 def test_llm_invalid_json_falls_back_to_mock_and_records_trace_error(db_session):

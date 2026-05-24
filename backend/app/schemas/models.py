@@ -38,7 +38,7 @@ class Task(BaseModel):
 
 class Evidence(BaseModel):
     evidence_id: str = Field(default_factory=lambda: f"ev_{uuid4().hex[:10]}")
-    source_type: Literal["web", "document", "pricing_page", "review", "interview", "survey"]
+    source_type: Literal["web", "public_web", "document", "pricing_page", "review", "interview", "survey"]
     url: str | None = None
     local_ref: str | None = None
     collected_at: datetime = Field(default_factory=datetime.utcnow)

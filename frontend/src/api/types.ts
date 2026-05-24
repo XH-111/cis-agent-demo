@@ -70,6 +70,37 @@ export type LlmStatus = {
   suggested_action: string;
 };
 
+export type CollectorStatus = {
+  search_provider: string;
+  api_key_configured: boolean;
+  base_url_configured: boolean;
+  timeout: number;
+  max_results: number;
+  enabled: boolean;
+};
+
+export type SearchTestResult = {
+  success: boolean;
+  provider: string;
+  query: string;
+  result_count: number;
+  results_preview: Array<{ title: string; url: string; snippet: string }>;
+  error_type?: string | null;
+  error_message?: string | null;
+};
+
+export type CollectorDiagnostics = {
+  collector_mode_requested?: string;
+  collector_mode_used?: string;
+  web_search_attempted?: boolean;
+  web_search_success?: boolean;
+  query_count?: number;
+  evidence_count?: number;
+  fallback_used?: boolean;
+  fallback_reason?: string;
+  elapsed_time_ms?: number;
+};
+
 export type QaResult = {
   task_id: string;
   status: "passed" | "failed" | "manual_review";

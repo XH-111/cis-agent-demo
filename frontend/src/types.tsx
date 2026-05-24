@@ -1,9 +1,12 @@
 export type {
   Claim,
+  CollectorDiagnostics,
+  CollectorStatus,
   Dag,
   Evidence,
   QaResult,
   Report,
+  SearchTestResult,
   Task,
   TraceRecord,
   LlmStatus,

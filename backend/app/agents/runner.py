@@ -48,6 +48,7 @@ class MockWorkflowRunner:
         demo_mode: DemoMode = "normal",
         auto_rework: bool = False,
         writer_mode: str = "mock",
+        collector_mode: str = "mock",
     ) -> dict:
         task = self.task_service.update_status(task_id, "running")
         plan = self.planner.run(PlannerInput(task=task))
@@ -68,6 +69,7 @@ class MockWorkflowRunner:
                 analysis=None,
                 writer_output=None,
                 writer_mode=writer_mode,
+                collector_mode=collector_mode,
             )
 
         evidence, analysis, writer_output = self._produce_outputs(
@@ -75,6 +77,7 @@ class MockWorkflowRunner:
             demo_mode=demo_mode,
             retry_count=0,
             writer_mode=writer_mode,
+            collector_mode=collector_mode,
         )
 
         qa_result = self.qa.run(
@@ -102,6 +105,7 @@ class MockWorkflowRunner:
                 analysis=analysis,
                 writer_output=writer_output,
                 writer_mode=writer_mode,
+                collector_mode=collector_mode,
             )
 
         return self._finalize_or_fail(task, plan, qa_result, history, evidence, writer_output)
@@ -113,11 +117,14 @@ class MockWorkflowRunner:
         demo_mode: DemoMode,
         retry_count: int,
         writer_mode: str,
+        collector_mode: str,
         evidence: list[Evidence] | None = None,
         analysis: AnalystOutput | None = None,
     ) -> tuple[list[Evidence], AnalystOutput, ReportWriterOutput]:
         if evidence is None:
-            collector_output = self.collector.run(CollectorInput(task=task, retry_count=retry_count))
+            collector_output = self.collector.run(
+                CollectorInput(task=task, retry_count=retry_count, collector_mode=collector_mode)
+            )
             evidence = collector_output.evidence
             self.evidence_service.save_many(task.task_id, evidence)
 
@@ -154,6 +161,7 @@ class MockWorkflowRunner:
         analysis: AnalystOutput | None,
         writer_output: ReportWriterOutput | None,
         writer_mode: str,
+        collector_mode: str,
     ) -> dict:
         current_task = task
         current_qa = qa_result
@@ -183,7 +191,11 @@ class MockWorkflowRunner:
 
             if current_qa.route_to == "CollectorAgent":
                 collector_output = self.collector.run(
-                    CollectorInput(task=current_task, retry_count=current_qa.rework_count)
+                    CollectorInput(
+                        task=current_task,
+                        retry_count=current_qa.rework_count,
+                        collector_mode=collector_mode,
+                    )
                 )
                 current_evidence = collector_output.evidence
                 self.evidence_service.save_many(current_task.task_id, current_evidence)
