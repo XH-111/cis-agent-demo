@@ -8,13 +8,19 @@ from app.agents.qa import QaAgent
 from app.agents.report_writer import ReportWriterAgent
 from app.schemas import (
     AnalystInput,
+    AnalystOutput,
     CollectorInput,
     DemoMode,
+    Evidence,
     FinalReportInput,
     PlannerInput,
+    PlannerOutput,
     QaInput,
     QaResult,
     ReportWriterInput,
+    ReportWriterOutput,
+    ReworkHistoryItem,
+    Task,
 )
 from app.services.evidence_service import EvidenceService
 from app.services.report_service import ReportService
@@ -36,38 +42,34 @@ class MockWorkflowRunner:
         self.qa = QaAgent(self.trace_service)
         self.final_report = FinalReportAgent(self.trace_service)
 
-    def run(self, task_id: str, demo_mode: DemoMode = "normal") -> dict:
+    def run(self, task_id: str, demo_mode: DemoMode = "normal", auto_rework: bool = False) -> dict:
         task = self.task_service.update_status(task_id, "running")
         plan = self.planner.run(PlannerInput(task=task))
+        history: list[ReworkHistoryItem] = []
 
         if demo_mode == "qa_missing_evidence":
-            qa_output = self.qa.run(QaInput(task=task, evidence=[], demo_mode=demo_mode))
-            qa_result = qa_output.qa_result
-            self.report_service.save_qa(qa_result)
-            self.task_service.update_status(task_id, self._status_for_qa(qa_result), rework_count=qa_result.rework_count)
-            return {"plan": plan, "qa_result": qa_result, "report": None}
-
-        collector_output = self.collector.run(CollectorInput(task=task))
-        evidence = collector_output.evidence
-        self.evidence_service.save_many(task.task_id, evidence)
-
-        analysis = self.analyst.run(
-            AnalystInput(
+            qa_result = self.qa.run(QaInput(task=task, evidence=[], demo_mode=demo_mode)).qa_result
+            self._save_qa(qa_result, history)
+            if not auto_rework:
+                self.task_service.update_status(task_id, self._status_for_qa(qa_result), rework_count=qa_result.rework_count)
+                return {"plan": plan, "qa_result": qa_result, "report": None}
+            return self._auto_rework(
                 task=task,
-                evidence=evidence,
-                force_invalid_extraction=demo_mode == "qa_invalid_extraction",
+                plan=plan,
+                qa_result=qa_result,
+                history=history,
+                evidence=[],
+                analysis=None,
+                writer_output=None,
             )
+
+        evidence, analysis, writer_output = self._produce_outputs(
+            task=task,
+            demo_mode=demo_mode,
+            retry_count=0,
         )
 
-        writer_output = self.writer.run(
-            ReportWriterInput(
-                task=task,
-                knowledge=analysis,
-                force_bad_format=demo_mode == "qa_bad_report",
-            )
-        )
-
-        qa_output = self.qa.run(
+        qa_result = self.qa.run(
             QaInput(
                 task=task,
                 evidence=evidence,
@@ -75,33 +77,161 @@ class MockWorkflowRunner:
                 report_output=writer_output,
                 demo_mode=demo_mode,
             )
-        )
-        qa_result = qa_output.qa_result
-        self.report_service.save_qa(qa_result)
+        ).qa_result
+        self._save_qa(qa_result, history)
 
-        if demo_mode != "normal":
+        if demo_mode != "normal" and not auto_rework:
             self.task_service.update_status(task_id, self._status_for_qa(qa_result), rework_count=qa_result.rework_count)
             return {"plan": plan, "qa_result": qa_result, "report": None}
 
-        if qa_result.status == "failed" and qa_result.route_to == "ReportWriterAgent":
-            task = self.task_service.update_status(task_id, "qa_failed", rework_count=qa_result.rework_count)
-            fixed_output = self.writer.run(
-                ReportWriterInput(task=task, knowledge=analysis, retry_count=qa_result.rework_count)
+        if qa_result.status == "failed" and auto_rework:
+            return self._auto_rework(
+                task=task,
+                plan=plan,
+                qa_result=qa_result,
+                history=history,
+                evidence=evidence,
+                analysis=analysis,
+                writer_output=writer_output,
             )
-            qa_output = self.qa.run(
-                QaInput(
+
+        return self._finalize_or_fail(task, plan, qa_result, history, evidence, writer_output)
+
+    def _produce_outputs(
+        self,
+        *,
+        task: Task,
+        demo_mode: DemoMode,
+        retry_count: int,
+        evidence: list[Evidence] | None = None,
+        analysis: AnalystOutput | None = None,
+    ) -> tuple[list[Evidence], AnalystOutput, ReportWriterOutput]:
+        if evidence is None:
+            collector_output = self.collector.run(CollectorInput(task=task, retry_count=retry_count))
+            evidence = collector_output.evidence
+            self.evidence_service.save_many(task.task_id, evidence)
+
+        if analysis is None:
+            analysis = self.analyst.run(
+                AnalystInput(
                     task=task,
                     evidence=evidence,
-                    analysis=analysis,
-                    report_output=fixed_output,
-                    retry_count=qa_result.rework_count,
+                    retry_count=retry_count,
+                    force_invalid_extraction=demo_mode == "qa_invalid_extraction",
                 )
             )
-            qa_result = qa_output.qa_result
-            self.report_service.save_qa(qa_result)
-            writer_output = fixed_output
 
-        if qa_result.status == "passed" and writer_output.report is not None:
+        writer_output = self.writer.run(
+            ReportWriterInput(
+                task=task,
+                knowledge=analysis,
+                retry_count=retry_count,
+                force_bad_format=demo_mode == "qa_bad_report",
+            )
+        )
+        return evidence, analysis, writer_output
+
+    def _auto_rework(
+        self,
+        *,
+        task: Task,
+        plan: PlannerOutput,
+        qa_result: QaResult,
+        history: list[ReworkHistoryItem],
+        evidence: list[Evidence],
+        analysis: AnalystOutput | None,
+        writer_output: ReportWriterOutput | None,
+    ) -> dict:
+        current_task = task
+        current_qa = qa_result
+        current_evidence = evidence
+        current_analysis = analysis
+        current_writer_output = writer_output
+
+        while current_qa.status == "failed":
+            instruction = current_qa.rework_instructions[0] if current_qa.rework_instructions else None
+            if instruction is None or current_qa.route_to is None:
+                break
+
+            history_item = ReworkHistoryItem(
+                round=current_qa.rework_count,
+                from_status=current_qa.status,
+                error_type=instruction.error_type,
+                route_to=current_qa.route_to,
+                action=instruction.suggested_action,
+            )
+            history.append(history_item)
+
+            current_task = self.task_service.update_status(
+                current_task.task_id,
+                "qa_failed",
+                rework_count=current_qa.rework_count,
+            )
+
+            if current_qa.route_to == "CollectorAgent":
+                collector_output = self.collector.run(
+                    CollectorInput(task=current_task, retry_count=current_qa.rework_count)
+                )
+                current_evidence = collector_output.evidence
+                self.evidence_service.save_many(current_task.task_id, current_evidence)
+                current_analysis = self.analyst.run(
+                    AnalystInput(task=current_task, evidence=current_evidence, retry_count=current_qa.rework_count)
+                )
+                current_writer_output = self.writer.run(
+                    ReportWriterInput(task=current_task, knowledge=current_analysis, retry_count=current_qa.rework_count)
+                )
+            elif current_qa.route_to == "AnalystAgent":
+                current_analysis = self.analyst.run(
+                    AnalystInput(task=current_task, evidence=current_evidence, retry_count=current_qa.rework_count)
+                )
+                current_writer_output = self.writer.run(
+                    ReportWriterInput(task=current_task, knowledge=current_analysis, retry_count=current_qa.rework_count)
+                )
+            elif current_qa.route_to == "ReportWriterAgent":
+                if current_analysis is None:
+                    current_analysis = self.analyst.run(
+                        AnalystInput(task=current_task, evidence=current_evidence, retry_count=current_qa.rework_count)
+                    )
+                current_writer_output = self.writer.run(
+                    ReportWriterInput(task=current_task, knowledge=current_analysis, retry_count=current_qa.rework_count)
+                )
+            else:
+                break
+
+            current_qa = self.qa.run(
+                QaInput(
+                    task=current_task,
+                    evidence=current_evidence,
+                    analysis=current_analysis,
+                    report_output=current_writer_output,
+                    retry_count=current_task.rework_count,
+                    demo_mode="normal",
+                )
+            ).qa_result
+            history[-1].result_status = current_qa.status
+            self._save_qa(current_qa, history)
+
+        return self._finalize_or_fail(
+            current_task,
+            plan,
+            current_qa,
+            history,
+            current_evidence,
+            current_writer_output,
+        )
+
+    def _finalize_or_fail(
+        self,
+        task: Task,
+        plan: PlannerOutput,
+        qa_result: QaResult,
+        history: list[ReworkHistoryItem],
+        evidence: list[Evidence],
+        writer_output: ReportWriterOutput | None,
+    ) -> dict:
+        qa_result.rework_history = history
+
+        if qa_result.status == "passed" and writer_output is not None and writer_output.report is not None:
             final_output = self.final_report.run(
                 FinalReportInput(
                     task=task,
@@ -112,11 +242,17 @@ class MockWorkflowRunner:
                 )
             )
             self.report_service.save_report(final_output.report)
-            self.task_service.update_status(task_id, "completed", rework_count=qa_result.rework_count)
+            self.task_service.update_status(task.task_id, "completed", rework_count=qa_result.rework_count)
+            self._save_qa(qa_result, history)
             return {"plan": plan, "qa_result": qa_result, "report": final_output.report}
 
-        self.task_service.update_status(task_id, self._status_for_qa(qa_result), rework_count=qa_result.rework_count)
+        self.task_service.update_status(task.task_id, self._status_for_qa(qa_result), rework_count=qa_result.rework_count)
+        self._save_qa(qa_result, history)
         return {"plan": plan, "qa_result": qa_result, "report": None}
+
+    def _save_qa(self, qa_result: QaResult, history: list[ReworkHistoryItem]) -> None:
+        qa_result.rework_history = list(history)
+        self.report_service.save_qa(qa_result)
 
     @staticmethod
     def _status_for_qa(qa_result: QaResult) -> str:

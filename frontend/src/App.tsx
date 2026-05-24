@@ -23,6 +23,7 @@ export default function App() {
   const [selectedClaim, setSelectedClaim] = useState<Claim>();
   const [busy, setBusy] = useState(false);
   const [demoMode, setDemoMode] = useState<DemoMode>("normal");
+  const [autoRework, setAutoRework] = useState(false);
 
   useEffect(() => {
     loadTasks();
@@ -72,7 +73,7 @@ export default function App() {
     if (!task) return;
     setBusy(true);
     try {
-      const result = await api.runTask(task.task_id, demoMode) as { report?: Report | null };
+      const result = await api.runTask(task.task_id, demoMode, autoRework) as { report?: Report | null };
       await loadTasks(task.task_id);
       if (!result.report) {
         setReport(undefined);
@@ -131,6 +132,14 @@ export default function App() {
           <button onClick={run} disabled={!task || busy} className="inline-flex items-center gap-2 rounded bg-accent px-4 py-2 font-semibold text-white disabled:opacity-50">
             <Play size={16} /> 运行 Demo 工作流
           </button>
+          <label className="inline-flex items-center gap-2 rounded border border-line bg-white px-3 py-2 text-sm">
+            <input
+              type="checkbox"
+              checked={autoRework}
+              onChange={(event) => setAutoRework(event.target.checked)}
+            />
+            auto_rework=true
+          </label>
           <span className="text-sm text-slate-600">执行所选 Mock Agent DAG，并生成 DAG、报告、证据、QA 和 Trace。</span>
         </div>
 

@@ -34,10 +34,11 @@ def get_task(task_id: str, db: Session = Depends(get_db)):
 def run_task(
     task_id: str,
     demo_mode: str = Query("normal", pattern="^(normal|qa_missing_evidence|qa_invalid_extraction|qa_bad_report)$"),
+    auto_rework: bool = Query(False),
     db: Session = Depends(get_db),
 ):
     try:
-        return MockWorkflowRunner(db).run(task_id, demo_mode=demo_mode)
+        return MockWorkflowRunner(db).run(task_id, demo_mode=demo_mode, auto_rework=auto_rework)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Task not found") from exc
 

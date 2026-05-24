@@ -54,6 +54,14 @@ export type QaResult = {
     failed_claim?: string;
     failed_schema?: string;
   }>;
+  rework_history: Array<{
+    round: number;
+    from_status: string;
+    error_type: string;
+    route_to?: string;
+    action: string;
+    result_status?: string;
+  }>;
   route_to?: string;
   rework_count: number;
 };

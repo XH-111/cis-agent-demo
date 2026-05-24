@@ -52,6 +52,20 @@ export function QaPanel({ qa }: { qa?: QaResult }) {
           )}
         />
       </div>
+      <div className="mt-3 rounded border border-line bg-white p-3">
+        <div className="mb-2 text-sm font-semibold">rework_history</div>
+        {qa.rework_history?.length ? (
+          <div className="space-y-2">
+            {qa.rework_history.map((item) => (
+              <div key={`${item.round}-${item.error_type}-${item.route_to}`} className="rounded border border-line bg-panel p-2 text-sm text-slate-700">
+                round: {item.round} | from_status: {item.from_status} | error_type: {item.error_type} | route_to: {item.route_to ?? "-"} | action: {item.action} | result_status: {item.result_status ?? "-"}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-slate-500">暂无自动返工历史</p>
+        )}
+      </div>
     </section>
   );
 }

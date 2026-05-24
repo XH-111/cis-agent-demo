@@ -112,12 +112,22 @@ class ReworkInstruction(BaseModel):
     failed_schema: str | None = None
 
 
+class ReworkHistoryItem(BaseModel):
+    round: int
+    from_status: Literal["failed", "manual_review"]
+    error_type: str
+    route_to: AgentName | None = None
+    action: str
+    result_status: Literal["passed", "failed", "manual_review"] | None = None
+
+
 class QaResult(BaseModel):
     task_id: str
     status: Literal["passed", "failed", "manual_review"]
     hard_errors: list[str] = Field(default_factory=list)
     soft_suggestions: list[str] = Field(default_factory=list)
     rework_instructions: list[ReworkInstruction] = Field(default_factory=list)
+    rework_history: list[ReworkHistoryItem] = Field(default_factory=list)
     route_to: AgentName | None = None
     rework_count: int = 0
     checked_at: datetime = Field(default_factory=datetime.utcnow)

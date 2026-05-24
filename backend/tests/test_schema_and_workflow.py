@@ -190,3 +190,39 @@ def test_normal_workflow_still_passes(db_session):
         "FinalReport",
     }
     assert all(trace.schema_validation_result == "passed" for trace in traces)
+
+
+@pytest.mark.parametrize(
+    ("demo_mode", "expected_route"),
+    [
+        ("qa_missing_evidence", "CollectorAgent"),
+        ("qa_invalid_extraction", "AnalystAgent"),
+        ("qa_bad_report", "ReportWriterAgent"),
+    ],
+)
+def test_auto_rework_routes_and_then_passes(db_session, demo_mode, expected_route):
+    task = make_task(db_session)
+    result = MockWorkflowRunner(db_session).run(task.task_id, demo_mode=demo_mode, auto_rework=True)
+    qa_result = result["qa_result"]
+    assert qa_result.status == "passed"
+    assert qa_result.rework_count == 1
+    assert qa_result.rework_history
+    assert qa_result.rework_history[0].route_to == expected_route
+    assert qa_result.rework_history[0].result_status == "passed"
+    assert result["report"] is not None
+
+    traces = TraceService(db_session).list_for_task(task.task_id)
+    agent_names = [trace.agent_name for trace in traces]
+    assert "QaAgent" in agent_names
+    assert agent_names.count("QaAgent") >= 2
+    assert expected_route in agent_names
+
+
+def test_auto_rework_respects_manual_review_limit(db_session):
+    task = make_task(db_session)
+    TaskService(db_session).update_status(task.task_id, "running", rework_count=3)
+    task = TaskService(db_session).get_task(task.task_id)
+    qa = QaAgent(TraceService(db_session))
+    result = qa.run(QaInput(task=task, evidence=[], demo_mode="qa_missing_evidence")).qa_result
+    assert result.status == "manual_review"
+    assert result.route_to is None
