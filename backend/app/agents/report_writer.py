@@ -292,12 +292,19 @@ class ReportWriterAgent:
         system = (
             "You are ReportWriterAgent. Write only from supplied Evidence and Knowledge. "
             "Do not invent sources. Every key claim must bind evidence_ids. "
-            "Return strict JSON only. If evidence is insufficient, write '证据不足' instead of fabricating."
+            "Return strict JSON only. If evidence is insufficient, write '证据不足' instead of fabricating. "
+            "For claims[].category, use only one of these exact enum values: "
+            "positioning, feature, pricing, persona, risk, recommendation. "
+            "Do not output Chinese category names or any other category value. "
+            "If unsure, use recommendation."
         )
         user = (
             "Return JSON with keys markdown_report, json_report, claims. "
-            "Each claim must include claim_id, text, evidence_ids. "
-            "Optional claim fields: category, confidence. Input:\n"
+            "Each claim must include claim_id, text, evidence_ids, category, confidence. "
+            "claims[].category must be exactly one of: positioning, feature, pricing, persona, risk, recommendation. "
+            "Example claim: "
+            '{"claim_id":"claim_1","text":"source-backed conclusion","category":"positioning","evidence_ids":["ev_1"],"confidence":0.82}. '
+            "Input:\n"
             f"{prompt_data}"
         )
         return [{"role": "system", "content": system}, {"role": "user", "content": user}]
