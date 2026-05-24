@@ -17,6 +17,8 @@ export type Evidence = {
   local_ref?: string;
   snippet: string;
   confidence: number;
+  source_domain?: string;
+  source_quality?: "official" | "documentation" | "media" | "review" | "unknown" | "low_quality";
   collected_at: string;
 };
 

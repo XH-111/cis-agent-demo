@@ -365,6 +365,8 @@ def test_tavily_results_convert_to_evidence(db_session, monkeypatch):
     assert output.diagnostics["collector_mode_used"] == "web"
     assert output.evidence[0].source_type == "public_web"
     assert output.evidence[0].url == "https://www.feishu.cn/pricing"
+    assert output.evidence[0].source_domain == "feishu.cn"
+    assert output.evidence[0].source_quality == "official"
     assert output.evidence[0].confidence >= 0.85
 
 
@@ -429,6 +431,78 @@ def test_collector_web_results_convert_to_evidence(db_session):
     assert output.evidence[0].confidence == 0.9
     assert output.diagnostics["collector_mode_used"] == "web"
     assert output.diagnostics["web_search_success"] is True
+
+
+def test_collector_deduplicates_normalized_urls(db_session):
+    class DuplicateSearchClient(FakeWebSearchClient):
+        def __init__(self):
+            super().__init__()
+            self.called = False
+
+        def search(self, query: str, limit: int = 5):
+            if self.called:
+                return WebSearchResponse(available=True, attempted=True, success=True, elapsed_time_ms=1, results=[])
+            self.called = True
+            return WebSearchResponse(
+                available=True,
+                attempted=True,
+                success=True,
+                elapsed_time_ms=1,
+                results=[
+                    SearchResult(title="A", url="https://www.feishu.cn/pricing/?utm_source=x&fbclid=y", snippet="Feishu pricing product features official page."),
+                    SearchResult(title="A copy", url="https://www.feishu.cn/pricing", snippet="Feishu pricing product features official page duplicated."),
+                ],
+            )
+
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    output = CollectorAgent(trace_service, web_search_client=DuplicateSearchClient()).run(
+        CollectorInput(task=task, collector_mode="web")
+    )
+    assert len(output.evidence) == 1
+    assert output.evidence[0].url == "https://www.feishu.cn/pricing"
+    assert output.diagnostics["raw_evidence_count"] == 2
+    assert output.diagnostics["deduplicated_evidence_count"] == 1
+    assert output.diagnostics["duplicate_removed_count"] == 1
+
+
+def test_url_tracking_params_are_ignored():
+    assert CollectorAgent.normalize_url("https://example.com/path/?utm_source=a&spm=b&x=1") == "https://example.com/path?x=1"
+
+
+def test_source_domain_extraction():
+    assert CollectorAgent.extract_source_domain("https://www.feishu.cn/pricing") == "feishu.cn"
+    assert CollectorAgent.extract_source_domain("https://open.dingtalk.com/document") == "dingtalk.com"
+
+
+def test_source_quality_confidence_rules():
+    official_quality = CollectorAgent._source_quality("https://www.feishu.cn/pricing", "pricing", "Official pricing product features content.", ["飞书"])
+    unknown_quality = CollectorAgent._source_quality("https://example.net/blog", "blog", "General market content with enough words to evaluate quality.", ["飞书"])
+    low_quality = CollectorAgent._source_quality("https://spam.example/click", "x", "short", ["飞书"])
+    assert CollectorAgent._confidence_for_result("https://www.feishu.cn/pricing", "Official pricing product features content.", official_quality) > CollectorAgent._confidence_for_result("https://example.net/blog", "General market content with enough words to evaluate quality.", unknown_quality)
+    assert CollectorAgent._confidence_for_result("https://spam.example/click", "short", low_quality) < 0.5
+
+
+def test_low_confidence_claim_generates_soft_suggestion(db_session):
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    low_evidence = Evidence(
+        source_type="public_web",
+        url="https://spam.example/click",
+        source_domain="example",
+        source_quality="low_quality",
+        snippet="short",
+        confidence=0.4,
+    )
+    analysis = AnalystAgent(trace_service).run(AnalystInput(task=task, evidence=[low_evidence]))
+    claim = Claim(text="Low confidence claim", category="risk", evidence_ids=[low_evidence.evidence_id], confidence=0.4)
+    report = Report(task_id=task.task_id, markdown="# Report", json_report={"claims": [claim.model_dump(mode="json")]}, claims=[claim])
+    writer_output = ReportWriterOutput(report=report)
+    qa_result = QaAgent(trace_service).run(
+        QaInput(task=task, evidence=[low_evidence], analysis=analysis, report_output=writer_output)
+    ).qa_result
+    assert qa_result.status == "passed"
+    assert any("证据可信度较低" in item for item in qa_result.soft_suggestions)
 
 
 def test_collector_web_timeout_does_not_crash_workflow(db_session):

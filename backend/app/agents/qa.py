@@ -160,6 +160,7 @@ class QaAgent:
                     failed_claim=claim.text,
                 )
 
+        quality_suggestions, diagnostics = self._quality_suggestions(input_data)
         return QaResult(
             task_id=task.task_id,
             status="passed",
@@ -168,17 +169,50 @@ class QaAgent:
                 for suggestion in [
                     "生产环境接入前，请将 Mock 证据替换为真实采集器输出。",
                     input_data.report_output.llm_fallback_reason if input_data.report_output else None,
+                    *quality_suggestions,
                 ]
                 if suggestion
             ],
             rework_count=rework_count,
         )
 
+    def _quality_suggestions(self, input_data: QaInput) -> tuple[list[str], dict]:
+        suggestions: list[str] = []
+        evidence_by_id = {item.evidence_id: item for item in input_data.evidence}
+        low_confidence_claim_count = 0
+
+        if len(input_data.evidence) < 3:
+            suggestions.append("Web Collector 返回 Evidence 数量少于 3，建议补充更多公开来源。")
+
+        missing_domain_count = sum(1 for item in input_data.evidence if not item.source_domain)
+        if missing_domain_count:
+            suggestions.append("部分 Evidence 缺少 source_domain，建议检查来源解析逻辑。")
+
+        if input_data.report_output and input_data.report_output.report:
+            for claim in input_data.report_output.report.claims:
+                related = [evidence_by_id[item] for item in claim.evidence_ids if item in evidence_by_id]
+                if related and all(item.confidence < 0.5 for item in related):
+                    low_confidence_claim_count += 1
+                    suggestions.append("该结论引用的证据可信度较低，建议补充官方或高质量来源。")
+
+        diagnostics = {
+            "evidence_quality_checked": True,
+            "low_confidence_claim_count": low_confidence_claim_count,
+            "soft_suggestion_count": len(suggestions),
+        }
+        return suggestions, diagnostics
+
     def run(self, input_data: QaInput) -> QaOutput:
         task = input_data.task
 
         def produce() -> QaOutput:
-            return QaOutput(qa_result=self.evaluate(input_data))
+            result = self.evaluate(input_data)
+            _, diagnostics = self._quality_suggestions(input_data) if result.status == "passed" else (
+                [],
+                {"evidence_quality_checked": False, "low_confidence_claim_count": 0, "soft_suggestion_count": len(result.soft_suggestions)},
+            )
+            diagnostics["soft_suggestion_count"] = len(result.soft_suggestions)
+            return QaOutput(qa_result=result, diagnostics=diagnostics)
 
         return run_with_trace(
             trace_service=self.trace_service,

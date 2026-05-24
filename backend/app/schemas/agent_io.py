@@ -72,6 +72,7 @@ class QaInput(BaseModel):
 
 class QaOutput(BaseModel):
     qa_result: QaResult
+    diagnostics: dict = Field(default_factory=dict)
 
 
 class FinalReportInput(BaseModel):

@@ -44,6 +44,8 @@ class Evidence(BaseModel):
     collected_at: datetime = Field(default_factory=datetime.utcnow)
     snippet: str = Field(min_length=1)
     confidence: float = Field(ge=0, le=1)
+    source_domain: str | None = None
+    source_quality: Literal["official", "documentation", "media", "review", "unknown", "low_quality"] = "unknown"
 
     @model_validator(mode="after")
     def require_source_reference(self) -> "Evidence":
