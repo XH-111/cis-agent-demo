@@ -6,6 +6,8 @@ export type Task = {
   industry: string;
   status: string;
   rework_count: number;
+  created_at: string;
+  updated_at: string;
 };
 
 export type Evidence = {
@@ -66,6 +68,8 @@ export type TraceRecord = {
   elapsed_time_ms: number;
   retry_count: number;
   error_message?: string;
+  model_name?: string;
+  token_usage?: number;
 };
 
 export type Dag = {
