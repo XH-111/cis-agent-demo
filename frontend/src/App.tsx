@@ -9,7 +9,7 @@ import { ReportView } from "./components/ReportView";
 import { TaskForm } from "./components/TaskForm";
 import { TaskList } from "./components/TaskList";
 import { TraceViewer } from "./components/TraceViewer";
-import type { Claim, Dag, DemoMode, Evidence, QaResult, Report, Task, TraceRecord } from "./types";
+import type { Claim, Dag, DemoMode, Evidence, LlmStatus, QaResult, Report, Task, TraceRecord, WriterDiagnostics } from "./types";
 import { Pill } from "./types";
 
 export default function App() {
@@ -24,10 +24,18 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [demoMode, setDemoMode] = useState<DemoMode>("normal");
   const [autoRework, setAutoRework] = useState(false);
+  const [writerMode, setWriterMode] = useState<"mock" | "llm">("mock");
+  const [llmStatus, setLlmStatus] = useState<LlmStatus>();
+  const [llmTesting, setLlmTesting] = useState(false);
 
   useEffect(() => {
     loadTasks();
+    loadLlmStatus();
   }, []);
+
+  async function loadLlmStatus() {
+    await api.llmStatus().then(setLlmStatus).catch(() => setLlmStatus(undefined));
+  }
 
   async function loadTasks(selectTaskId?: string) {
     const nextTasks = await api.listTasks();
@@ -73,7 +81,7 @@ export default function App() {
     if (!task) return;
     setBusy(true);
     try {
-      const result = await api.runTask(task.task_id, demoMode, autoRework) as { report?: Report | null };
+      const result = await api.runTask(task.task_id, demoMode, autoRework, writerMode) as { report?: Report | null };
       await loadTasks(task.task_id);
       if (!result.report) {
         setReport(undefined);
@@ -86,6 +94,33 @@ export default function App() {
       setBusy(false);
     }
   }
+
+  async function testLlm() {
+    setLlmTesting(true);
+    try {
+      setLlmStatus(await api.testLlm());
+    } finally {
+      setLlmTesting(false);
+    }
+  }
+
+  const writerDiagnostics = report?.json_report.writer_diagnostics as WriterDiagnostics | undefined;
+  const llmStatusLabel = !llmStatus
+    ? "LLM 状态未知"
+    : !llmStatus.api_key_configured
+      ? "未配置 API Key"
+      : llmStatus.last_check_status === "success"
+        ? "测试成功"
+        : llmStatus.last_check_status === "failed"
+          ? "测试失败"
+          : "已配置，未测试";
+  const writerDiagnosticMessage = writerDiagnostics
+    ? writerDiagnostics.fallback_used
+      ? `已选择 ${writerDiagnostics.writer_mode_requested ?? writerMode} ReportWriter，但本次使用 ${writerDiagnostics.writer_mode_used ?? "mock"}。原因：${writerDiagnostics.llm_fallback_reason ?? writerDiagnostics.llm_error_message ?? "未知"}`
+      : writerDiagnostics.writer_mode_used === "llm"
+        ? `LLM ReportWriter 调用成功，耗时 ${writerDiagnostics.llm_elapsed_time_ms ?? 0}ms，模型：${writerDiagnostics.llm_model ?? "未记录"}。`
+        : `本次使用 ${writerDiagnostics.writer_mode_used ?? "mock"} ReportWriter。`
+    : undefined;
 
   return (
     <main className="min-h-screen">
@@ -129,6 +164,25 @@ export default function App() {
             <option value="qa_invalid_extraction">QA 失败：抽取冲突</option>
             <option value="qa_bad_report">QA 失败：报告格式错误</option>
           </select>
+          <select
+            className="rounded border border-line bg-white px-3 py-2 text-sm"
+            value={writerMode}
+            onChange={(event) => setWriterMode(event.target.value as "mock" | "llm")}
+          >
+            <option value="mock">Mock ReportWriter</option>
+            <option value="llm">LLM ReportWriter</option>
+          </select>
+          <span className="rounded border border-line bg-white px-3 py-2 text-sm">
+            LLM：{llmStatusLabel}
+          </span>
+          <button
+            type="button"
+            onClick={testLlm}
+            disabled={llmTesting}
+            className="rounded border border-line bg-white px-3 py-2 text-sm font-semibold disabled:opacity-50"
+          >
+            {llmTesting ? "测试中..." : "测试 LLM 连接"}
+          </button>
           <button onClick={run} disabled={!task || busy} className="inline-flex items-center gap-2 rounded bg-accent px-4 py-2 font-semibold text-white disabled:opacity-50">
             <Play size={16} /> 运行 Demo 工作流
           </button>
@@ -142,6 +196,32 @@ export default function App() {
           </label>
           <span className="text-sm text-slate-600">执行所选 Mock Agent DAG，并生成 DAG、报告、证据、QA 和 Trace。</span>
         </div>
+
+        {(llmStatus || writerDiagnosticMessage) && (
+          <div className="mb-4 rounded border border-line bg-white p-3 text-sm">
+            <div className="flex flex-wrap gap-x-5 gap-y-2">
+              <span>LLM Provider：{llmStatus?.llm_provider ?? "未读取"}</span>
+              <span>模型：{llmStatus?.llm_model ?? "未读取"}</span>
+              <span>Base URL：{llmStatus?.base_url_configured ? "已配置" : "未配置"}</span>
+              <span>API Key：{llmStatus?.api_key_configured ? "已配置" : "未配置"}</span>
+              <span>状态：{llmStatusLabel}</span>
+            </div>
+            {llmStatus?.last_error && <div className="mt-2 text-danger">测试错误：{llmStatus.last_error}</div>}
+            {writerDiagnostics && (
+              <div className="mt-2 grid gap-2 md:grid-cols-4">
+                <span>requested：{writerDiagnostics.writer_mode_requested ?? "-"}</span>
+                <span>used：{writerDiagnostics.writer_mode_used ?? "-"}</span>
+                <span>fallback：{writerDiagnostics.fallback_used ? "true" : "false"}</span>
+                <span>llm_call：{writerDiagnostics.llm_call_attempted ? (writerDiagnostics.llm_call_success ? "success" : "failed") : "not_attempted"}</span>
+              </div>
+            )}
+            {writerDiagnosticMessage && (
+              <div className={`mt-2 rounded border px-3 py-2 ${writerDiagnostics?.fallback_used ? "border-amber-300 bg-amber-50 text-warning" : "border-green-300 bg-green-50 text-success"}`}>
+                {writerDiagnosticMessage}
+              </div>
+            )}
+          </div>
+        )}
 
         <div className="space-y-4">
           <DagView dag={dag} traces={traces} qaRouteTo={qa?.route_to} />

@@ -1,4 +1,5 @@
 import pytest
+import time
 from pydantic import ValidationError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -26,10 +27,14 @@ from app.schemas import (
     PlannerInput,
     PlannerOutput,
     QaInput,
+    QaResult,
     QaOutput,
+    Report,
     ReportWriterInput,
     ReportWriterOutput,
 )
+from app.services.llm_client import LlmResponse
+from app.services.report_service import ReportService
 from app.services.task_service import TaskService
 from app.services.trace_service import TraceService
 
@@ -190,6 +195,113 @@ def test_normal_workflow_still_passes(db_session):
         "FinalReport",
     }
     assert all(trace.schema_validation_result == "passed" for trace in traces)
+
+
+def test_llm_writer_without_api_key_falls_back_to_mock(db_session, monkeypatch):
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    task = make_task(db_session)
+    result = MockWorkflowRunner(db_session).run(task.task_id, writer_mode="llm")
+    assert result["qa_result"].status == "passed"
+    assert result["report"] is not None
+    assert result["report"].json_report["writer_mode"] == "mock"
+    diagnostics = result["report"].json_report["writer_diagnostics"]
+    assert diagnostics["writer_mode_requested"] == "llm"
+    assert diagnostics["writer_mode_used"] == "mock"
+    assert diagnostics["fallback_used"] is True
+    assert "LLM_API_KEY" in diagnostics["llm_fallback_reason"]
+
+
+class FakeLlmClient:
+    def __init__(self, content: str):
+        self.content = content
+        self.provider = "fake"
+        self.model = "fake-model"
+        self.base_url = "https://fake.local/v1"
+        self.is_available = True
+
+    def chat_json(self, messages, timeout: float = 30.0):
+        time.sleep(0.02)
+        return LlmResponse(
+            available=True,
+            content=self.content,
+            provider="fake",
+            model="fake-model",
+            attempted=True,
+            success=True,
+            elapsed_time_ms=20,
+            response_preview=self.content[:300],
+        )
+
+
+def test_llm_writer_success_records_diagnostics_and_elapsed_time(db_session):
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    evidence = CollectorAgent(trace_service).run(CollectorInput(task=task)).evidence
+    analysis = AnalystAgent(trace_service).run(AnalystInput(task=task, evidence=evidence))
+    writer = ReportWriterAgent(
+        trace_service,
+        llm_client=FakeLlmClient(
+            '{"markdown_report":"# LLM Report","json_report":{},"claims":[{"claim_id":"c1","text":"source-backed claim","evidence_ids":["'
+            + evidence[0].evidence_id
+            + '"]}]}'
+        ),
+    )
+    writer_output = writer.run(ReportWriterInput(task=task, knowledge=analysis, evidence=evidence, writer_mode="llm"))
+    assert writer_output.report is not None
+    diagnostics = writer_output.report.json_report["writer_diagnostics"]
+    assert diagnostics["writer_mode_requested"] == "llm"
+    assert diagnostics["writer_mode_used"] == "llm"
+    assert diagnostics["llm_call_attempted"] is True
+    assert diagnostics["llm_call_success"] is True
+    traces = [trace for trace in trace_service.list_for_task(task.task_id) if trace.agent_name == "ReportWriterAgent"]
+    assert traces[-1].elapsed_time_ms > 0
+
+
+def test_llm_claim_missing_evidence_routes_to_report_writer(db_session):
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    evidence = CollectorAgent(trace_service).run(CollectorInput(task=task)).evidence
+    analysis = AnalystAgent(trace_service).run(AnalystInput(task=task, evidence=evidence))
+    writer = ReportWriterAgent(
+        trace_service,
+        llm_client=FakeLlmClient(
+            '{"markdown_report":"# Bad","json_report":{},"claims":[{"claim_id":"c1","text":"unsupported"}]}'
+        ),
+    )
+    writer_output = writer.run(ReportWriterInput(task=task, knowledge=analysis, evidence=evidence, writer_mode="llm"))
+    qa_result = QaAgent(trace_service).run(
+        QaInput(task=task, evidence=evidence, analysis=analysis, report_output=writer_output)
+    ).qa_result
+    assert qa_result.status == "failed"
+    assert qa_result.route_to == "ReportWriterAgent"
+    assert any(trace.schema_validation_result == "failed" for trace in trace_service.list_for_task(task.task_id))
+
+
+def test_llm_invalid_json_falls_back_to_mock_and_records_trace_error(db_session):
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    evidence = CollectorAgent(trace_service).run(CollectorInput(task=task)).evidence
+    analysis = AnalystAgent(trace_service).run(AnalystInput(task=task, evidence=evidence))
+    writer = ReportWriterAgent(trace_service, llm_client=FakeLlmClient("not valid json"))
+    writer_output = writer.run(ReportWriterInput(task=task, knowledge=analysis, evidence=evidence, writer_mode="llm"))
+    assert writer_output.report is not None
+    assert writer_output.report.json_report["writer_mode"] == "mock"
+    traces = trace_service.list_for_task(task.task_id)
+    assert any(trace.schema_validation_result == "failed" and trace.error_message for trace in traces)
+    assert any("LLM returned invalid JSON" in (trace.error_message or "") for trace in traces)
+
+
+def test_latest_report_for_task_uses_latest_saved_row(db_session):
+    task = make_task(db_session)
+    service = ReportService(db_session)
+    claim = Claim(text="supported", category="feature", evidence_ids=["ev_1"], confidence=0.9)
+    old_report = Report(task_id=task.task_id, markdown="# Old", json_report={"version": "old"}, claims=[claim], qa_result=QaResult(task_id=task.task_id, status="passed"))
+    new_report = Report(task_id=task.task_id, markdown="# New", json_report={"version": "new"}, claims=[claim], qa_result=QaResult(task_id=task.task_id, status="passed"))
+    service.save_report(old_report)
+    service.save_report(new_report)
+    latest = service.get_latest_for_task(task.task_id)
+    assert latest.report_id == new_report.report_id
+    assert latest.json_report["version"] == "new"
 
 
 @pytest.mark.parametrize(

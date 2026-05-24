@@ -163,7 +163,14 @@ class QaAgent:
         return QaResult(
             task_id=task.task_id,
             status="passed",
-            soft_suggestions=["生产环境接入前，请将 Mock 证据替换为真实采集器输出。"],
+            soft_suggestions=[
+                suggestion
+                for suggestion in [
+                    "生产环境接入前，请将 Mock 证据替换为真实采集器输出。",
+                    input_data.report_output.llm_fallback_reason if input_data.report_output else None,
+                ]
+                if suggestion
+            ],
             rework_count=rework_count,
         )
 

@@ -5,11 +5,22 @@ from app.agents.runner import MockWorkflowRunner, default_dag
 from app.database import get_db
 from app.schemas import CreateTaskRequest
 from app.services.evidence_service import EvidenceService
+from app.services.llm_client import LlmClient
 from app.services.report_service import ReportService
 from app.services.task_service import TaskService
 from app.services.trace_service import TraceService
 
 router = APIRouter(prefix="/api")
+
+
+@router.get("/llm/status")
+def llm_status():
+    return LlmClient().status()
+
+
+@router.post("/llm/test")
+def test_llm_connection():
+    return LlmClient().test_connection()
 
 
 @router.post("/tasks")
@@ -35,10 +46,16 @@ def run_task(
     task_id: str,
     demo_mode: str = Query("normal", pattern="^(normal|qa_missing_evidence|qa_invalid_extraction|qa_bad_report)$"),
     auto_rework: bool = Query(False),
+    writer_mode: str = Query("mock", pattern="^(mock|llm)$"),
     db: Session = Depends(get_db),
 ):
     try:
-        return MockWorkflowRunner(db).run(task_id, demo_mode=demo_mode, auto_rework=auto_rework)
+        return MockWorkflowRunner(db).run(
+            task_id,
+            demo_mode=demo_mode,
+            auto_rework=auto_rework,
+            writer_mode=writer_mode,
+        )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Task not found") from exc
 

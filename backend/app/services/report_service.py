@@ -1,6 +1,7 @@
 import json
 
 from sqlalchemy.orm import Session
+from sqlalchemy import literal_column
 
 from app.db_models import QaRecordRow, ReportRecordRow
 from app.schemas import QaResult, Report
@@ -27,7 +28,12 @@ class ReportService:
         return Report.model_validate(json.loads(row.payload_json))
 
     def get_latest_for_task(self, task_id: str) -> Report:
-        row = self.db.query(ReportRecordRow).filter_by(task_id=task_id).order_by(ReportRecordRow.report_id.desc()).first()
+        row = (
+            self.db.query(ReportRecordRow)
+            .filter_by(task_id=task_id)
+            .order_by(literal_column("rowid").desc())
+            .first()
+        )
         if row is None:
             raise KeyError(task_id)
         return Report.model_validate(json.loads(row.payload_json))

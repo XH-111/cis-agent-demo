@@ -42,7 +42,13 @@ class MockWorkflowRunner:
         self.qa = QaAgent(self.trace_service)
         self.final_report = FinalReportAgent(self.trace_service)
 
-    def run(self, task_id: str, demo_mode: DemoMode = "normal", auto_rework: bool = False) -> dict:
+    def run(
+        self,
+        task_id: str,
+        demo_mode: DemoMode = "normal",
+        auto_rework: bool = False,
+        writer_mode: str = "mock",
+    ) -> dict:
         task = self.task_service.update_status(task_id, "running")
         plan = self.planner.run(PlannerInput(task=task))
         history: list[ReworkHistoryItem] = []
@@ -61,12 +67,14 @@ class MockWorkflowRunner:
                 evidence=[],
                 analysis=None,
                 writer_output=None,
+                writer_mode=writer_mode,
             )
 
         evidence, analysis, writer_output = self._produce_outputs(
             task=task,
             demo_mode=demo_mode,
             retry_count=0,
+            writer_mode=writer_mode,
         )
 
         qa_result = self.qa.run(
@@ -93,6 +101,7 @@ class MockWorkflowRunner:
                 evidence=evidence,
                 analysis=analysis,
                 writer_output=writer_output,
+                writer_mode=writer_mode,
             )
 
         return self._finalize_or_fail(task, plan, qa_result, history, evidence, writer_output)
@@ -103,6 +112,7 @@ class MockWorkflowRunner:
         task: Task,
         demo_mode: DemoMode,
         retry_count: int,
+        writer_mode: str,
         evidence: list[Evidence] | None = None,
         analysis: AnalystOutput | None = None,
     ) -> tuple[list[Evidence], AnalystOutput, ReportWriterOutput]:
@@ -125,8 +135,10 @@ class MockWorkflowRunner:
             ReportWriterInput(
                 task=task,
                 knowledge=analysis,
+                evidence=evidence,
                 retry_count=retry_count,
                 force_bad_format=demo_mode == "qa_bad_report",
+                writer_mode=writer_mode,
             )
         )
         return evidence, analysis, writer_output
@@ -141,6 +153,7 @@ class MockWorkflowRunner:
         evidence: list[Evidence],
         analysis: AnalystOutput | None,
         writer_output: ReportWriterOutput | None,
+        writer_mode: str,
     ) -> dict:
         current_task = task
         current_qa = qa_result
@@ -178,14 +191,26 @@ class MockWorkflowRunner:
                     AnalystInput(task=current_task, evidence=current_evidence, retry_count=current_qa.rework_count)
                 )
                 current_writer_output = self.writer.run(
-                    ReportWriterInput(task=current_task, knowledge=current_analysis, retry_count=current_qa.rework_count)
+                    ReportWriterInput(
+                        task=current_task,
+                        knowledge=current_analysis,
+                        evidence=current_evidence,
+                        retry_count=current_qa.rework_count,
+                        writer_mode=writer_mode,
+                    )
                 )
             elif current_qa.route_to == "AnalystAgent":
                 current_analysis = self.analyst.run(
                     AnalystInput(task=current_task, evidence=current_evidence, retry_count=current_qa.rework_count)
                 )
                 current_writer_output = self.writer.run(
-                    ReportWriterInput(task=current_task, knowledge=current_analysis, retry_count=current_qa.rework_count)
+                    ReportWriterInput(
+                        task=current_task,
+                        knowledge=current_analysis,
+                        evidence=current_evidence,
+                        retry_count=current_qa.rework_count,
+                        writer_mode=writer_mode,
+                    )
                 )
             elif current_qa.route_to == "ReportWriterAgent":
                 if current_analysis is None:
@@ -193,7 +218,13 @@ class MockWorkflowRunner:
                         AnalystInput(task=current_task, evidence=current_evidence, retry_count=current_qa.rework_count)
                     )
                 current_writer_output = self.writer.run(
-                    ReportWriterInput(task=current_task, knowledge=current_analysis, retry_count=current_qa.rework_count)
+                    ReportWriterInput(
+                        task=current_task,
+                        knowledge=current_analysis,
+                        evidence=current_evidence,
+                        retry_count=current_qa.rework_count,
+                        writer_mode=writer_mode,
+                    )
                 )
             else:
                 break

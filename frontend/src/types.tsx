@@ -5,7 +5,9 @@ export type {
   QaResult,
   Report,
   Task,
-  TraceRecord
+  TraceRecord,
+  LlmStatus,
+  WriterDiagnostics
 } from "./api/types";
 
 export type DemoMode = "normal" | "qa_missing_evidence" | "qa_invalid_extraction" | "qa_bad_report";

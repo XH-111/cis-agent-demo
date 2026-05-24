@@ -44,14 +44,19 @@ class AnalystOutput(BaseModel):
 class ReportWriterInput(BaseModel):
     task: Task
     knowledge: AnalystOutput
+    evidence: list[Evidence] = Field(default_factory=list)
     retry_count: int = 0
     simulate_missing_evidence: bool = False
     force_bad_format: bool = False
+    writer_mode: Literal["mock", "llm"] = "mock"
 
 
 class ReportWriterOutput(BaseModel):
     report: Report | None = None
     draft_report: dict | None = None
+    writer_mode: Literal["mock", "llm"] = "mock"
+    llm_fallback_reason: str | None = None
+    diagnostics: dict = Field(default_factory=dict)
 
 
 class QaInput(BaseModel):

@@ -35,9 +35,39 @@ export type Report = {
   json_report: {
     knowledge?: Record<string, unknown>;
     claims?: Claim[];
+    writer_diagnostics?: WriterDiagnostics;
   };
   claims: Claim[];
   qa_result?: QaResult;
+};
+
+export type WriterDiagnostics = {
+  writer_mode_requested?: string;
+  writer_mode_used?: string;
+  llm_enabled?: boolean;
+  llm_provider?: string;
+  llm_model?: string;
+  llm_base_url_configured?: boolean;
+  has_api_key?: boolean;
+  llm_call_attempted?: boolean;
+  llm_call_success?: boolean;
+  llm_elapsed_time_ms?: number;
+  llm_error_type?: string;
+  llm_error_message?: string;
+  llm_response_preview?: string;
+  fallback_used?: boolean;
+  llm_fallback_reason?: string;
+};
+
+export type LlmStatus = {
+  llm_provider: string;
+  llm_model: string;
+  base_url_configured: boolean;
+  api_key_configured: boolean;
+  llm_enabled: boolean;
+  last_check_status: "not_checked" | "success" | "failed";
+  last_error?: string | null;
+  suggested_action: string;
 };
 
 export type QaResult = {

@@ -124,6 +124,47 @@ npm run build
 - 点击报告 Claim 后查看对应 Evidence
 - Trace Viewer 支持按 Agent 过滤
 
+## ReportWriter 模式
+
+系统默认使用 Mock ReportWriter，不需要任何 API Key：
+
+```text
+POST /api/tasks/{task_id}/run?writer_mode=mock
+```
+
+也可以选择最小真实 LLM ReportWriter：
+
+```text
+POST /api/tasks/{task_id}/run?writer_mode=llm
+```
+
+前端“运行 Demo 工作流”旁边提供：
+
+- `Mock ReportWriter`
+- `LLM ReportWriter`
+
+### 配置 LLM
+
+复制 `.env.example` 并按本地环境设置：
+
+```bash
+LLM_PROVIDER=openai_compatible
+LLM_API_KEY=
+LLM_BASE_URL=
+LLM_MODEL=
+```
+
+当前实现使用 OpenAI-compatible Chat Completions 协议，后续可以接 OpenAI、DeepSeek、豆包或其他兼容 API。
+
+不要把真实 API Key 提交到 GitHub。
+
+### Fallback 行为
+
+- 没有 `LLM_API_KEY` 时，即使选择 `writer_mode=llm`，系统也会自动 fallback 到 Mock ReportWriter。
+- LLM 调用异常时，workflow 不会崩溃，会 fallback 到 Mock ReportWriter。
+- LLM 返回非法 JSON 时，会记录失败 Trace，然后 fallback 到 Mock ReportWriter。
+- LLM 返回的 Claim 缺少 `evidence_ids` 时，不会静默修复，会进入 QA failed，并路由回 `ReportWriterAgent`。
+
 ## 后续接入真实 Agent 的位置
 
 推荐从 `backend/app/agents/runner.py` 开始接入 LangGraph。
