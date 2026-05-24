@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.agents.runner import MockWorkflowRunner, default_dag
@@ -31,9 +31,13 @@ def get_task(task_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/tasks/{task_id}/run")
-def run_task(task_id: str, db: Session = Depends(get_db)):
+def run_task(
+    task_id: str,
+    demo_mode: str = Query("normal", pattern="^(normal|qa_missing_evidence|qa_invalid_extraction|qa_bad_report)$"),
+    db: Session = Depends(get_db),
+):
     try:
-        return MockWorkflowRunner(db).run(task_id)
+        return MockWorkflowRunner(db).run(task_id, demo_mode=demo_mode)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Task not found") from exc
 

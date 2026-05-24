@@ -1,8 +1,10 @@
 from collections.abc import Callable
+from typing import Any
 from time import perf_counter
 from uuid import uuid4
 
 from pydantic import ValidationError
+from pydantic import BaseModel
 
 from app.schemas import AgentMessage, TraceRecord
 from app.services.trace_service import TraceService
@@ -23,11 +25,12 @@ def run_with_trace(
     input_summary: str,
     retry_count: int,
     fn: Callable[[], dict],
-) -> dict:
+) -> Any:
     trace_id = f"trace_{uuid4().hex[:12]}"
     start = perf_counter()
     try:
         output = fn()
+        payload = output.model_dump(mode="json") if isinstance(output, BaseModel) else output
         AgentMessage(
             trace_id=trace_id,
             task_id=task_id,
@@ -35,7 +38,7 @@ def run_with_trace(
             to_agent=to_agent,
             message_type=message_type,
             schema_name=schema_name,
-            payload=output,
+            payload=payload,
         )
         trace = TraceRecord(
             trace_id=trace_id,

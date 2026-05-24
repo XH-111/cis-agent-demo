@@ -16,7 +16,7 @@ const statusClass: Record<string, string> = {
 
 const statusLabel: Record<string, string> = {
   completed: "已完成",
-  passed: "已通过",
+  passed: "Schema 通过",
   failed: "失败",
   qa_failed: "QA 未通过",
   manual_review: "需要人工复核",
@@ -336,12 +336,26 @@ function QaPanel({ qa }: { qa?: QaResult }) {
   if (!qa) return null;
   return (
     <section className="bg-white p-4">
-      <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold"><SearchCheck size={18} /> 质检结果</h2>
+      <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold"><SearchCheck size={18} /> 业务质检结果</h2>
       <div className="mb-3 flex items-center gap-3"><Pill value={qa.status} /><span className="text-sm">返工次数：{qa.rework_count}</span></div>
       <div className="grid gap-3 md:grid-cols-3">
         <List title="硬错误" items={qa.hard_errors} />
         <List title="优化建议" items={qa.soft_suggestions} />
-        <List title="返工指令" items={qa.rework_instructions.map((item) => `${item.target_agent}: ${item.suggested_action}`)} />
+        <List
+          title="返工指令"
+          items={qa.rework_instructions.map((item) =>
+            [
+              `error_type: ${item.error_type}`,
+              item.failed_claim ? `failed_claim: ${item.failed_claim}` : undefined,
+              item.failed_schema ? `failed_schema: ${item.failed_schema}` : undefined,
+              `reason: ${item.reason}`,
+              `route_to: ${item.target_agent}`,
+              `suggested_action: ${item.suggested_action}`,
+              `rework_count: ${qa.rework_count}`,
+              `final_status: ${qa.status}`
+            ].filter(Boolean).join(" | ")
+          )}
+        />
       </div>
     </section>
   );
@@ -366,7 +380,7 @@ function TraceViewer({ traces }: { traces: TraceRecord[] }) {
       <div className="overflow-auto rounded border border-line">
         <table className="w-full min-w-[900px] border-collapse text-left text-sm">
           <thead className="bg-panel">
-            <tr><th className="p-2">Agent</th><th className="p-2">Trace</th><th className="p-2">输入摘要</th><th className="p-2">输出摘要</th><th className="p-2">校验结果</th><th className="p-2">耗时(ms)</th><th className="p-2">重试</th></tr>
+            <tr><th className="p-2">Agent</th><th className="p-2">Trace</th><th className="p-2">输入摘要</th><th className="p-2">输出摘要</th><th className="p-2">Schema 校验</th><th className="p-2">耗时(ms)</th><th className="p-2">重试</th></tr>
           </thead>
           <tbody>
             {filtered.map((trace) => (
@@ -396,6 +410,7 @@ export default function App() {
   const [traces, setTraces] = useState<TraceRecord[]>([]);
   const [selectedClaim, setSelectedClaim] = useState<Claim>();
   const [busy, setBusy] = useState(false);
+  const [demoMode, setDemoMode] = useState("normal");
 
   useEffect(() => {
     api.listTasks().then((tasks) => {
@@ -422,8 +437,15 @@ export default function App() {
     if (!task) return;
     setBusy(true);
     try {
-      await api.runTask(task.task_id);
+      const result = await api.runTask(task.task_id, demoMode) as { report?: Report | null };
       await refresh(task.task_id);
+      if (!result.report) {
+        setReport(undefined);
+        setSelectedClaim(undefined);
+      }
+      if (demoMode === "qa_missing_evidence") {
+        setEvidence([]);
+      }
     } finally {
       setBusy(false);
     }
@@ -455,10 +477,22 @@ export default function App() {
           </div>
         )}
 
-        <button onClick={run} disabled={!task || busy} className="mb-4 inline-flex items-center gap-2 rounded bg-accent px-4 py-2 font-semibold text-white disabled:opacity-50">
-          <Play size={16} /> 运行 Demo 工作流
-        </button>
-        <span className="ml-3 align-middle text-sm text-slate-600">执行 Mock Agent DAG，并生成 DAG、报告、证据、QA 和 Trace。</span>
+        <div className="mb-4 flex flex-wrap items-center gap-3">
+          <select
+            className="rounded border border-line bg-white px-3 py-2 text-sm"
+            value={demoMode}
+            onChange={(event) => setDemoMode(event.target.value)}
+          >
+            <option value="normal">正常流程</option>
+            <option value="qa_missing_evidence">QA 失败：缺少证据</option>
+            <option value="qa_invalid_extraction">QA 失败：抽取冲突</option>
+            <option value="qa_bad_report">QA 失败：报告格式错误</option>
+          </select>
+          <button onClick={run} disabled={!task || busy} className="inline-flex items-center gap-2 rounded bg-accent px-4 py-2 font-semibold text-white disabled:opacity-50">
+            <Play size={16} /> 运行 Demo 工作流
+          </button>
+          <span className="text-sm text-slate-600">执行所选 Mock Agent DAG，并生成 DAG、报告、证据、QA 和 Trace。</span>
+        </div>
 
         <div className="mt-4 space-y-4">
           <DagView dag={dag} />

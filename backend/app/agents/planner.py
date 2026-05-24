@@ -1,5 +1,5 @@
 from app.agents.base import run_with_trace
-from app.schemas import Dag, DagEdge, DagNode, Task
+from app.schemas import Dag, DagEdge, DagNode, PlannerInput, PlannerOutput
 from app.services.trace_service import TraceService
 
 
@@ -9,8 +9,10 @@ class PlannerAgent:
     def __init__(self, trace_service: TraceService):
         self.trace_service = trace_service
 
-    def run(self, task: Task, retry_count: int = 0) -> dict:
-        def produce() -> dict:
+    def run(self, input_data: PlannerInput) -> PlannerOutput:
+        task = input_data.task
+
+        def produce() -> PlannerOutput:
             dag = Dag(
                 nodes=[
                     DagNode(id="PlannerAgent", label="规划任务范围和 DAG", status="completed"),
@@ -31,14 +33,14 @@ class PlannerAgent:
                     DagEdge(source="QaAgent", target="ReportWriterAgent", label="格式错误"),
                 ],
             )
-            return {
-                "dag": dag.model_dump(mode="json"),
-                "plan": [
+            return PlannerOutput(
+                dag=dag,
+                plan=[
                     "采集竞品定位、功能、定价和用户画像证据。",
                     "将发现归一化为结构化竞品知识 Schema。",
                     "生成带 evidence_ids 的关键结论并执行 QA 反馈闭环。",
                 ],
-            }
+            )
 
         return run_with_trace(
             trace_service=self.trace_service,
@@ -46,8 +48,8 @@ class PlannerAgent:
             agent_name=self.name,
             to_agent="CollectorAgent",
             message_type="plan",
-            schema_name="Dag",
+            schema_name="PlannerOutput",
             input_summary=f"{task.product_name} 对比 {', '.join(task.competitors)}",
-            retry_count=retry_count,
+            retry_count=input_data.retry_count,
             fn=produce,
         )

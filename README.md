@@ -2,7 +2,7 @@
 
 这是一个面向 CIS AI 挑战赛的“多 Agent 竞品分析系统”初步 Demo。
 
-当前版本使用确定性的 Mock Agent，不包含真实 LLM、真实爬虫、真实 RAG、向量数据库或复杂分析。它的目标是先把可演示、可替换、可扩展的工程骨架搭好：Schema、API、持久化、Mock 工作流、QA 打回闭环、证据绑定、Trace 可观测、前端页面和测试。
+当前版本使用确定性的 Mock Agent，不调用真实 LLM，不执行真实爬虫，不接入 RAG 或向量数据库。它的目标是先把可演示、可替换、可扩展的工程骨架搭好：Schema、API、持久化、Mock 工作流、QA 打回闭环、证据绑定、Trace 可观测、前端页面和测试。
 
 ## 架构概览
 
@@ -15,17 +15,15 @@ SQLite + SQLAlchemy
        |
 MockWorkflowRunner
        |
-PlannerAgent -> CollectorAgent -> AnalystAgent -> ReportWriterAgent -> QaAgent -> FinalReport
+PlannerAgent -> CollectorAgent -> AnalystAgent -> ReportWriterAgent -> QaAgent -> FinalReportAgent
 ```
 
 QA 支持以下打回路径：
 
-- 缺少证据 -> `CollectorAgent` 或 `ReportWriterAgent`
+- 缺少证据 -> `CollectorAgent`
 - 抽取错误或结论冲突 -> `AnalystAgent`
-- 报告格式错误 -> `ReportWriterAgent`
+- 报告格式错误或 Claim 缺少证据 -> `ReportWriterAgent`
 - 返工次数超过 3 次 -> `manual_review`
-
-Demo 工作流会故意先生成一版缺少 `evidence_ids` 的坏草稿，触发 QA 失败并打回 `ReportWriterAgent`，随后重新生成带证据绑定的最终报告并通过 QA。
 
 ## 项目结构
 
@@ -34,7 +32,7 @@ backend/
   app/
     api/                 FastAPI 路由
     agents/              Mock Agent 和工作流 Runner
-    schemas/             Pydantic Schema 与校验规则
+    schemas/             Pydantic Schema 与 Agent I/O Schema
     services/            Task、Trace、Evidence、Report 服务
     database.py          SQLite 初始化
     db_models.py         SQLAlchemy 数据表模型
@@ -48,6 +46,8 @@ frontend/
   package.json
 docs/
   requirements_summary.md
+  demo_status_and_next_steps.md
+  demo_gap_analysis.md
 ```
 
 ## 后端启动
@@ -93,21 +93,22 @@ cd backend
 pytest
 ```
 
-当前测试覆盖：
+前端构建检查：
 
-- `Claim.evidence_ids` 必须非空
-- `Evidence` 必须包含 `url` 或 `local_ref`
-- `AgentMessage` 必须包含 `trace_id` 和 `task_id`
-- QA 能把缺少证据的问题路由到返工 Agent
-- 返工次数超过 3 次后进入 `manual_review`
-- 每个 Agent 执行后都会生成 `TraceRecord`
+```bash
+cd frontend
+npm run build
+```
 
 ## REST API
 
 - `POST /api/tasks`：创建竞品分析任务
 - `GET /api/tasks`：查询任务列表
 - `GET /api/tasks/{task_id}`：查询任务详情
-- `POST /api/tasks/{task_id}/run`：启动 Mock Agent 工作流
+- `POST /api/tasks/{task_id}/run?demo_mode=normal`：启动正常 Mock 工作流
+- `POST /api/tasks/{task_id}/run?demo_mode=qa_missing_evidence`：演示 QA 打回 CollectorAgent
+- `POST /api/tasks/{task_id}/run?demo_mode=qa_invalid_extraction`：演示 QA 打回 AnalystAgent
+- `POST /api/tasks/{task_id}/run?demo_mode=qa_bad_report`：演示 QA 打回 ReportWriterAgent
 - `GET /api/tasks/{task_id}/dag`：查询 DAG 节点和边
 - `GET /api/tasks/{task_id}/traces`：查询 Trace 记录
 - `GET /api/tasks/{task_id}/evidence`：查询 Evidence 列表
@@ -117,24 +118,11 @@ pytest
 
 ## 前端功能
 
-前端是一个单页 Demo 工作台，包含：
-
-- 任务创建
-- 一键运行 Mock Workflow
-- DAG 执行状态展示
-- 竞品知识展示：`ProductProfile`、`FeatureTree`、`PricingModel`、`UserPersona`
-- Markdown 报告和 JSON 报告数据
-- 点击 Claim 后查看对应 Evidence
-- QA 结果面板：passed、failed、manual_review、hard errors、suggestions、rework instructions
-- Trace Viewer：按 Agent 过滤，查看 `trace_id`、输入摘要、输出摘要、Schema 校验结果、耗时、重试次数和错误信息
-
-## 核心 Schema 规则
-
-- `Claim.evidence_ids` 必填且不能为空。
-- `Evidence` 必须包含 `source_type`、`collected_at`、`snippet`、`confidence`，并且必须提供 `url` 或 `local_ref`。
-- `AgentMessage` 必须包含 `trace_id`、`task_id`、`from_agent`、`to_agent`、`message_type` 和 `schema_name`。
-- 所有 Agent 输入输出都保持结构化。
-- 无效模型输出不能静默通过，必须被 Pydantic 或 QA 拦截。
+- 创建分析任务，并提供示例任务
+- 选择正常流程或三类 QA 失败 Demo
+- 展示当前任务、任务状态、DAG、竞品知识、报告、证据、QA 和 Trace
+- 点击报告 Claim 后查看对应 Evidence
+- Trace Viewer 支持按 Agent 过滤
 
 ## 后续接入真实 Agent 的位置
 
@@ -142,12 +130,27 @@ pytest
 
 迁移建议：
 
-1. 保留 `backend/app/schemas/models.py` 作为 Agent 间通信契约。
+1. 保留 `backend/app/schemas/models.py` 和 `backend/app/schemas/agent_io.py` 作为 Agent 间通信契约。
 2. 将每个 Mock Agent 替换成 LangGraph 节点或子图。
-3. 保持 `run()` 的输入输出形状，避免前端和 API 大改。
+3. 保持 Agent `run()` 的输入输出 Schema 不变，减少 API 和前端改动。
 4. 替换 `CollectorAgent` 为合规 Web Collector，仍然输出结构化 `Evidence`。
 5. 在 `EvidenceService` 后面接入向量数据库或检索服务。
 6. 保留 `QaAgent` 的确定性硬校验：Schema 校验、证据覆盖率、引用完整性和人工复核升级不应完全依赖自由文本 LLM 判断。
+
+## Windows PowerShell 中文乱码怎么办
+
+如果在 Windows PowerShell 中执行 `Get-Content README.md` 看到中文乱码，可以使用以下方式之一：
+
+- 直接在 VS Code、GitHub 页面或支持 UTF-8 的编辑器中查看 Markdown。
+- 在 PowerShell 中先执行：
+
+```powershell
+chcp 65001
+```
+
+然后重新打开或读取文件。
+
+本仓库已增加 `.gitattributes`，将 Markdown、Python、TypeScript、JSON 文件按文本文件和 LF 换行管理，避免跨平台换行和编码显示风险。
 
 ## 合规说明
 

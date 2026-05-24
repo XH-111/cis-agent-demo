@@ -6,7 +6,15 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 TaskStatus = Literal["created", "running", "qa_failed", "manual_review", "completed", "failed"]
-AgentName = Literal["PlannerAgent", "CollectorAgent", "AnalystAgent", "ReportWriterAgent", "QaAgent", "FinalReport"]
+AgentName = Literal[
+    "PlannerAgent",
+    "CollectorAgent",
+    "AnalystAgent",
+    "ReportWriterAgent",
+    "QaAgent",
+    "FinalReport",
+    "FinalReportAgent",
+]
 
 
 class CreateTaskRequest(BaseModel):
@@ -100,6 +108,8 @@ class ReworkInstruction(BaseModel):
     reason: str
     suggested_action: str
     claim_id: str | None = None
+    failed_claim: str | None = None
+    failed_schema: str | None = None
 
 
 class QaResult(BaseModel):

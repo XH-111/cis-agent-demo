@@ -1,5 +1,5 @@
 from app.agents.base import run_with_trace
-from app.schemas import Evidence, Task
+from app.schemas import CollectorInput, CollectorOutput, Evidence
 from app.services.trace_service import TraceService
 
 
@@ -9,8 +9,10 @@ class CollectorAgent:
     def __init__(self, trace_service: TraceService):
         self.trace_service = trace_service
 
-    def run(self, task: Task, retry_count: int = 0) -> dict:
-        def produce() -> dict:
+    def run(self, input_data: CollectorInput) -> CollectorOutput:
+        task = input_data.task
+
+        def produce() -> CollectorOutput:
             competitors = task.competitors[:2]
             evidence = [
                 Evidence(
@@ -47,7 +49,7 @@ class CollectorAgent:
                         confidence=0.76,
                     )
                 )
-            return {"evidence": [item.model_dump(mode="json") for item in evidence]}
+            return CollectorOutput(evidence=evidence)
 
         return run_with_trace(
             trace_service=self.trace_service,
@@ -55,8 +57,8 @@ class CollectorAgent:
             agent_name=self.name,
             to_agent="AnalystAgent",
             message_type="evidence",
-            schema_name="list[Evidence]",
+            schema_name="CollectorOutput",
             input_summary=f"为 {task.region} 的 {task.industry} 场景采集 3-5 条 Mock 来源",
-            retry_count=retry_count,
+            retry_count=input_data.retry_count,
             fn=produce,
         )

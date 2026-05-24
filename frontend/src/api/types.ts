@@ -49,6 +49,8 @@ export type QaResult = {
     reason: string;
     suggested_action: string;
     claim_id?: string;
+    failed_claim?: string;
+    failed_schema?: string;
   }>;
   route_to?: string;
   rework_count: number;

@@ -16,6 +16,21 @@ from app.schemas.models import (
     TraceRecord,
     UserPersona,
 )
+from app.schemas.agent_io import (
+    AnalystInput,
+    AnalystOutput,
+    CollectorInput,
+    CollectorOutput,
+    DemoMode,
+    FinalReportInput,
+    FinalReportOutput,
+    PlannerInput,
+    PlannerOutput,
+    QaInput,
+    QaOutput,
+    ReportWriterInput,
+    ReportWriterOutput,
+)
 
 __all__ = [
     "AgentMessage",
@@ -34,4 +49,17 @@ __all__ = [
     "Task",
     "TraceRecord",
     "UserPersona",
+    "AnalystInput",
+    "AnalystOutput",
+    "CollectorInput",
+    "CollectorOutput",
+    "DemoMode",
+    "FinalReportInput",
+    "FinalReportOutput",
+    "PlannerInput",
+    "PlannerOutput",
+    "QaInput",
+    "QaOutput",
+    "ReportWriterInput",
+    "ReportWriterOutput",
 ]

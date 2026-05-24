@@ -1,5 +1,5 @@
 from app.agents.base import run_with_trace
-from app.schemas import Evidence, FeatureTree, PricingModel, ProductProfile, Task, UserPersona
+from app.schemas import AnalystInput, AnalystOutput, FeatureTree, PricingModel, ProductProfile, UserPersona
 from app.services.trace_service import TraceService
 
 
@@ -9,13 +9,16 @@ class AnalystAgent:
     def __init__(self, trace_service: TraceService):
         self.trace_service = trace_service
 
-    def run(self, task: Task, evidence: list[Evidence], retry_count: int = 0) -> dict:
-        def produce() -> dict:
+    def run(self, input_data: AnalystInput) -> AnalystOutput:
+        task = input_data.task
+        evidence = input_data.evidence
+
+        def produce() -> AnalystOutput:
             ids = [item.evidence_id for item in evidence]
             profile = ProductProfile(
                 product_name=task.product_name,
-                positioning="面向企业竞品分析的 AI 辅助情报工作台，强调可审计输出。",
-                target_segments=["产品市场团队", "战略团队", "销售赋能团队"],
+                positioning="" if input_data.force_invalid_extraction else "面向企业竞品分析的 AI 辅助情报工作台，强调可审计输出。",
+                target_segments=[] if input_data.force_invalid_extraction else ["产品市场团队", "战略团队", "销售赋能团队"],
                 strengths=["证据可追溯", "结构化 Schema", "QA 反馈闭环"],
                 weaknesses=["当前 Demo 仍使用 Mock 采集覆盖", "尚未接入实时网页新鲜度校验"],
                 evidence_ids=ids[:2],
@@ -43,12 +46,7 @@ class AnalystAgent:
                 buying_triggers=["进入新市场", "季度规划", "销售战卡更新"],
                 evidence_ids=ids[2:4] or ids[:1],
             )
-            return {
-                "product_profile": profile.model_dump(mode="json"),
-                "feature_tree": feature_tree.model_dump(mode="json"),
-                "pricing_model": pricing.model_dump(mode="json"),
-                "user_persona": persona.model_dump(mode="json"),
-            }
+            return AnalystOutput(product_profile=profile, feature_tree=feature_tree, pricing_model=pricing, user_persona=persona)
 
         return run_with_trace(
             trace_service=self.trace_service,
@@ -56,8 +54,8 @@ class AnalystAgent:
             agent_name=self.name,
             to_agent="ReportWriterAgent",
             message_type="analysis",
-            schema_name="CompetitorKnowledge",
+            schema_name="AnalystOutput",
             input_summary=f"分析 {len(evidence)} 条证据记录",
-            retry_count=retry_count,
+            retry_count=input_data.retry_count,
             fn=produce,
         )
