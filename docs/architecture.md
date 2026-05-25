@@ -1,0 +1,114 @@
+# CIS 多 Agent 竞品分析系统架构图
+
+本文档用于答辩 PPT 或项目说明，概括当前 Demo 的系统结构、Agent DAG 和 QA 自动返工闭环。
+
+## 1. 系统架构图
+
+```mermaid
+flowchart LR
+    User[用户 / 评委] --> FE[React + Vite 前端]
+
+    FE --> API[FastAPI REST API]
+
+    API --> TaskSvc[TaskService]
+    API --> TraceSvc[TraceService]
+    API --> EvidenceSvc[EvidenceService]
+    API --> ReportSvc[ReportService]
+    API --> Runner[MockWorkflowRunner]
+
+    TaskSvc --> DB[(SQLite)]
+    TraceSvc --> DB
+    EvidenceSvc --> DB
+    ReportSvc --> DB
+
+    Runner --> Planner[PlannerAgent]
+    Runner --> Collector[CollectorAgent]
+    Runner --> Analyst[AnalystAgent]
+    Runner --> Writer[ReportWriterAgent]
+    Runner --> QA[QaAgent]
+    Runner --> Final[FinalReportAgent]
+
+    Collector --> WebSearch[WebSearchClient / Tavily Search API]
+    WebSearch --> PublicWeb[公开网页搜索结果]
+
+    Writer --> LLM[LlmClient / OpenAI-Compatible API]
+
+    Collector -. fallback .-> MockEvidence[Mock Evidence]
+    Writer -. fallback .-> MockReport[Mock ReportWriter]
+```
+
+说明：
+
+1. 前端通过 FastAPI REST API 创建任务、运行 workflow、查看报告、Evidence、QA 和 Trace。
+2. 后端使用 SQLite 存储 Task、Evidence、Report、QA 和 Trace，便于本地演示和快速调试。
+3. CollectorAgent 支持 Mock 与 Web 两种模式，Web 模式通过 Tavily 搜索公开网页结果并转换为 Evidence。
+4. ReportWriterAgent 支持 Mock 与 LLM 两种模式，LLM 模式使用 OpenAI-compatible Chat Completions。
+5. Web Search 或 LLM 调用失败时不会中断 workflow，而是 fallback 到 Mock，并在 Trace 中记录原因。
+
+## 2. Agent DAG 工作流图
+
+```mermaid
+flowchart LR
+    Start([创建竞品分析任务]) --> Planner[PlannerAgent<br/>生成任务计划与 DAG]
+    Planner --> Collector[CollectorAgent<br/>采集 Mock / Web Evidence]
+    Collector --> Analyst[AnalystAgent<br/>生成结构化竞品知识]
+    Analyst --> Writer[ReportWriterAgent<br/>生成 Markdown / JSON 报告]
+    Writer --> QA[QaAgent<br/>Schema / Evidence / 格式校验]
+    QA -->|passed| Final[FinalReportAgent<br/>整合最终报告]
+    Final --> End([Final Report])
+
+    Collector -. Evidence .-> EvidenceStore[(Evidence Store)]
+    Writer -. Claims + evidence_ids .-> ReportStore[(Report Store)]
+    QA -. QaResult .-> QAStore[(QA Store)]
+
+    Planner -. Trace .-> TraceStore[(Trace Store)]
+    Collector -. Trace .-> TraceStore
+    Analyst -. Trace .-> TraceStore
+    Writer -. Trace .-> TraceStore
+    QA -. Trace .-> TraceStore
+    Final -. Trace .-> TraceStore
+```
+
+说明：
+
+1. 整个竞品分析被拆成 Planner、Collector、Analyst、ReportWriter、QA 和 FinalReport 六个 Agent 步骤。
+2. 每个 Agent 都使用结构化 Input / Output Schema，避免自由文本在 Agent 之间失控传递。
+3. ReportWriter 生成的每个 Claim 必须绑定 `evidence_ids`，从报告结论可以反查来源 Evidence。
+4. 每个 Agent 执行都会写入 Trace，包括输入摘要、输出摘要、Schema 校验结果、耗时和错误信息。
+5. 当前 Runner 是自定义 MockWorkflowRunner，后续可替换为 LangGraph，但保留相同 Schema 契约。
+
+## 3. QA 自动返工流程图
+
+```mermaid
+flowchart TD
+    QAStart[QaAgent 开始质检] --> CheckEvidence{是否缺少 Evidence?}
+
+    CheckEvidence -->|是| RouteCollector[route_to = CollectorAgent<br/>missing_evidence]
+    CheckEvidence -->|否| CheckAnalysis{结构化抽取是否有效?}
+
+    CheckAnalysis -->|否| RouteAnalyst[route_to = AnalystAgent<br/>invalid_extraction / contradiction]
+    CheckAnalysis -->|是| CheckReport{报告格式和 Claim 是否合格?}
+
+    CheckReport -->|否| RouteWriter[route_to = ReportWriterAgent<br/>bad_report_format]
+    CheckReport -->|是| QualityCheck[Evidence 质量 soft check<br/>low confidence / source_domain / evidence_count]
+
+    QualityCheck --> Passed[QA passed]
+
+    RouteCollector --> ReworkLimit{rework_count < max_rework?}
+    RouteAnalyst --> ReworkLimit
+    RouteWriter --> ReworkLimit
+
+    ReworkLimit -->|是| Rework[执行对应 Agent 返工]
+    Rework --> ReRunQA[重新进入 QaAgent]
+    ReRunQA --> QAStart
+
+    ReworkLimit -->|否| Manual[manual_review<br/>进入人工复核]
+```
+
+说明：
+
+1. QA 会优先检查硬错误：缺少 Evidence、结构化抽取异常、报告格式错误或 Claim 缺少 evidence_ids。
+2. 不同错误会路由回不同 Agent：缺少证据回 Collector，抽取问题回 Analyst，报告问题回 ReportWriter。
+3. 如果勾选 `auto_rework=true`，系统会自动执行返工 Agent，然后重新进入 QA。
+4. 最大返工次数为 `max_rework=3`，超过后进入 `manual_review`，避免无限循环。
+5. Evidence 质量问题属于 soft suggestion，例如低可信证据不会 hard fail，但会提示补充官方或高质量来源。
