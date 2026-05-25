@@ -77,6 +77,8 @@ manual_review / unknown route -> final_report
 - `qa -> analyst -> report_writer -> qa`
 - `qa -> report_writer -> qa`
 
+unknown `route_to` 会被统一视为安全兜底路径：记录 `reason=unknown_route`，将 `final_status` 置为 `manual_review`，然后进入 `final_report`，不允许继续循环。
+
 ## 防止死循环
 
 系统沿用 `max_rework=3`。
@@ -126,6 +128,10 @@ API query 参数 > WORKFLOW_ENGINE 环境变量 > 默认 custom
 - `rework_count`
 - `final_status`
 - `conditional_routes_taken`
+
+LangGraph 的返工历史以 `conditional_routes_taken` 作为 workflow-level 记录。前端 QA Panel 会优先展示 `QaResult.rework_history`；如果该字段为空，则从 `conditional_routes_taken` 生成“第 N 次返工：QaAgent -> 目标 Agent，原因：xxx”的展示项。
+
+刷新页面或切换任务时，前端会从最新的 `agent_name=WorkflowEngine` TraceRecord 的 `output_summary` 中恢复 workflow summary，不需要新增数据库表。
 
 ## 测试覆盖
 

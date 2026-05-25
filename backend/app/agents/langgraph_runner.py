@@ -210,17 +210,24 @@ class LangGraphWorkflowRunner:
         }
         if qa_result.status == "failed" and state["auto_rework"] and qa_result.route_to:
             instruction = qa_result.rework_instructions[0] if qa_result.rework_instructions else None
+            next_node = self._agent_to_node(qa_result.route_to)
+            is_unknown_route = next_node == "final_report"
             next_state["conditional_routes_taken"] = [
                 *state["conditional_routes_taken"],
                 {
                     "from_node": "qa",
-                    "to_node": self._agent_to_node(qa_result.route_to),
-                    "reason": instruction.error_type if instruction else "qa_failed",
+                    "to_node": next_node,
+                    "reason": "unknown_route" if is_unknown_route else (instruction.error_type if instruction else "qa_failed"),
                     "rework_count": qa_result.rework_count,
+                    **({"final_status": "manual_review"} if is_unknown_route else {}),
                 },
             ]
-            next_state["demo_mode"] = "normal"
-            next_state["task"] = self.task_service.update_status(task.task_id, "qa_failed", rework_count=qa_result.rework_count)
+            if is_unknown_route:
+                next_state["final_status"] = "manual_review"
+                next_state["task"] = self.task_service.update_status(task.task_id, "manual_review", rework_count=qa_result.rework_count)
+            else:
+                next_state["demo_mode"] = "normal"
+                next_state["task"] = self.task_service.update_status(task.task_id, "qa_failed", rework_count=qa_result.rework_count)
         return next_state
 
     def final_report_node(self, state: WorkflowState) -> WorkflowState:
@@ -247,7 +254,7 @@ class LangGraphWorkflowRunner:
                 "final_status": "completed",
                 "node_sequence": [*state["node_sequence"], "final_report"],
             }
-        final_status = self._status_for_qa(qa_result) if qa_result else "failed"
+        final_status = state.get("final_status") or (self._status_for_qa(qa_result) if qa_result else "failed")
         self.task_service.update_status(task.task_id, final_status, rework_count=qa_result.rework_count if qa_result else state["rework_count"])
         return {**state, "task": task, "report": None, "final_status": final_status, "node_sequence": [*state["node_sequence"], "final_report"]}
 

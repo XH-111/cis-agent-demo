@@ -97,7 +97,7 @@ export type WorkflowSummary = {
   workflow_engine_requested?: string;
   workflow_engine_used?: string;
   node_sequence?: string[];
-  conditional_routes_taken?: Array<{ from_node?: string; to_node?: string; reason?: string; rework_count?: number }>;
+  conditional_routes_taken?: Array<{ from_node?: string; to_node?: string; reason?: string; rework_count?: number; final_status?: string }>;
   rework_count?: number;
   final_status?: string;
   elapsed_time_ms?: number;

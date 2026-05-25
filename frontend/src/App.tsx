@@ -65,6 +65,10 @@ export default function App() {
     setDag(nextDag);
     setEvidence(nextEvidence);
     setTraces(nextTraces);
+    const recoveredSummary = recoverWorkflowSummary(nextTraces);
+    if (recoveredSummary) {
+      setWorkflowSummary(recoveredSummary);
+    }
     await api.qa(taskId).then(setQa).catch(() => setQa(undefined));
     await api.report(taskId).then((nextReport) => {
       setReport(nextReport);
@@ -349,7 +353,7 @@ export default function App() {
             setSelectedClaim(claim);
             setSelectedEvidenceIds([]);
           }} />
-          <QaPanel qa={qa} />
+          <QaPanel qa={qa} workflowSummary={workflowSummary} />
           <TraceViewer traces={traces} />
         </div>
       </div>
@@ -363,6 +367,17 @@ function latestCollectorDiagnostics(traces: TraceRecord[]): CollectorDiagnostics
   try {
     const parsed = JSON.parse(trace.output_summary) as CollectorDiagnostics;
     return parsed.collector_mode_requested ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function recoverWorkflowSummary(traces: TraceRecord[]): WorkflowSummary | undefined {
+  const trace = [...traces].reverse().find((item) => item.agent_name === "WorkflowEngine" && item.output_summary);
+  if (!trace?.output_summary) return undefined;
+  try {
+    const parsed = JSON.parse(trace.output_summary) as WorkflowSummary;
+    return parsed.workflow_engine_used ? parsed : undefined;
   } catch {
     return undefined;
   }

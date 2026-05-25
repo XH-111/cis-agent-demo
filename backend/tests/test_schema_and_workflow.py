@@ -36,6 +36,7 @@ from app.schemas import (
     Report,
     ReportWriterInput,
     ReportWriterOutput,
+    ReworkInstruction,
 )
 from app.services.llm_client import LlmResponse
 from app.services.report_service import ReportService
@@ -954,6 +955,94 @@ def test_langgraph_max_rework_enters_manual_review_without_loop(db_session):
     output = runner.qa_node(state)
     assert output["qa_result"].status == "manual_review"
     assert runner.route_after_qa(output) == "final_report"
+
+
+def test_langgraph_unknown_route_enters_manual_review_and_records_route(db_session):
+    task = make_task(db_session)
+    runner = LangGraphWorkflowRunner(db_session)
+
+    class UnknownRouteQa:
+        def run(self, input_data):
+            result = QaResult(
+                task_id=input_data.task.task_id,
+                status="failed",
+                hard_errors=["Unknown route demo"],
+                route_to="CollectorAgent",
+                rework_count=1,
+                rework_instructions=[
+                    ReworkInstruction(
+                        target_agent="CollectorAgent",
+                        error_type="missing_evidence",
+                        reason="Unknown route demo",
+                        suggested_action="Manual review required.",
+                    )
+                ],
+            )
+            object.__setattr__(result, "route_to", "UnknownAgent")
+            return QaOutput(
+                qa_result=result
+            )
+
+    runner.qa = UnknownRouteQa()
+    state = {
+        "task_id": task.task_id,
+        "task": task,
+        "workflow_engine_requested": "langgraph",
+        "workflow_engine_used": "langgraph",
+        "demo_mode": "normal",
+        "collector_mode": "mock",
+        "analyst_mode": "evidence",
+        "writer_mode": "mock",
+        "content_mode": None,
+        "auto_rework": True,
+        "rework_count": 0,
+        "max_rework": 3,
+        "evidence": [],
+        "report": None,
+        "qa_result": None,
+        "route_to": None,
+        "final_status": None,
+        "errors": [],
+        "node_sequence": [],
+        "conditional_routes_taken": [],
+        "workflow_summary": {},
+    }
+    output = runner.qa_node(state)
+    assert output["final_status"] == "manual_review"
+    assert output["conditional_routes_taken"][0]["reason"] == "unknown_route"
+    assert output["conditional_routes_taken"][0]["to_node"] == "final_report"
+    assert output["conditional_routes_taken"][0]["final_status"] == "manual_review"
+    assert runner.route_after_qa(output) == "final_report"
+    final_state = runner.final_report_node(output)
+    assert final_state["final_status"] == "manual_review"
+
+
+def test_langgraph_workflow_trace_contains_recoverable_summary_fields(db_session):
+    task = make_task(db_session)
+    result = LangGraphWorkflowRunner(db_session).run(task.task_id, workflow_engine_requested="langgraph")
+    trace = next(trace for trace in TraceService(db_session).list_for_task(task.task_id) if trace.agent_name == "WorkflowEngine")
+    summary = json.loads(trace.output_summary)
+    for key in [
+        "workflow_engine_requested",
+        "workflow_engine_used",
+        "node_sequence",
+        "conditional_routes_taken",
+        "rework_count",
+        "final_status",
+        "elapsed_time_ms",
+    ]:
+        assert key in summary
+    assert summary["workflow_engine_used"] == result["workflow_summary"]["workflow_engine_used"]
+
+
+def test_langgraph_conditional_routes_support_frontend_rework_history(db_session):
+    task = make_task(db_session)
+    result = LangGraphWorkflowRunner(db_session).run(task.task_id, demo_mode="qa_bad_report", auto_rework=True)
+    routes = result["workflow_summary"]["conditional_routes_taken"]
+    assert routes
+    assert routes[0]["from_node"] == "qa"
+    assert routes[0]["to_node"] == "report_writer"
+    assert routes[0]["reason"] == "bad_report_format"
 
 
 def test_langgraph_modes_and_competitor_coverage_still_work(db_session, monkeypatch):
