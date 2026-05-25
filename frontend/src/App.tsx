@@ -21,11 +21,13 @@ export default function App() {
   const [report, setReport] = useState<Report>();
   const [traces, setTraces] = useState<TraceRecord[]>([]);
   const [selectedClaim, setSelectedClaim] = useState<Claim>();
+  const [selectedEvidenceIds, setSelectedEvidenceIds] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [demoMode, setDemoMode] = useState<DemoMode>("normal");
   const [autoRework, setAutoRework] = useState(false);
   const [writerMode, setWriterMode] = useState<"mock" | "llm">("mock");
   const [collectorMode, setCollectorMode] = useState<"mock" | "web">("mock");
+  const [analystMode, setAnalystMode] = useState<"mock" | "evidence" | "llm">("evidence");
   const [llmStatus, setLlmStatus] = useState<LlmStatus>();
   const [collectorStatus, setCollectorStatus] = useState<CollectorStatus>();
   const [llmTesting, setLlmTesting] = useState(false);
@@ -65,9 +67,11 @@ export default function App() {
     await api.report(taskId).then((nextReport) => {
       setReport(nextReport);
       setSelectedClaim(nextReport.claims[0]);
+      setSelectedEvidenceIds([]);
     }).catch(() => {
       setReport(undefined);
       setSelectedClaim(undefined);
+      setSelectedEvidenceIds([]);
     });
   }
 
@@ -79,6 +83,7 @@ export default function App() {
     setReport(undefined);
     setTraces([]);
     setSelectedClaim(undefined);
+    setSelectedEvidenceIds([]);
     await refresh(nextTask.task_id);
   }
 
@@ -90,11 +95,12 @@ export default function App() {
     if (!task) return;
     setBusy(true);
     try {
-      const result = await api.runTask(task.task_id, demoMode, autoRework, writerMode, collectorMode) as { report?: Report | null };
+      const result = await api.runTask(task.task_id, demoMode, autoRework, writerMode, collectorMode, analystMode) as { report?: Report | null };
       await loadTasks(task.task_id);
       if (!result.report) {
         setReport(undefined);
         setSelectedClaim(undefined);
+        setSelectedEvidenceIds([]);
       }
       if (demoMode === "qa_missing_evidence") {
         setEvidence([]);
@@ -220,6 +226,15 @@ export default function App() {
             <option value="mock">Mock Collector</option>
             <option value="web">Web Collector</option>
           </select>
+          <select
+            className="rounded border border-line bg-white px-3 py-2 text-sm"
+            value={analystMode}
+            onChange={(event) => setAnalystMode(event.target.value as "mock" | "evidence" | "llm")}
+          >
+            <option value="mock">Mock Analyst</option>
+            <option value="evidence">Evidence-based Analyst</option>
+            <option value="llm">LLM Analyst</option>
+          </select>
           <span className="rounded border border-line bg-white px-3 py-2 text-sm">
             LLM：{llmStatusLabel}
           </span>
@@ -298,8 +313,14 @@ export default function App() {
 
         <div className="space-y-4">
           <DagView dag={dag} traces={traces} qaRouteTo={qa?.route_to} />
-          <KnowledgeView report={report} />
-          <ReportView report={report} evidence={evidence} selectedClaim={selectedClaim} onSelect={setSelectedClaim} />
+          <KnowledgeView report={report} evidence={evidence} onEvidenceIdsSelect={(ids) => {
+            setSelectedClaim(undefined);
+            setSelectedEvidenceIds(ids);
+          }} />
+          <ReportView report={report} evidence={evidence} competitors={task?.competitors} selectedClaim={selectedClaim} selectedEvidenceIds={selectedEvidenceIds} onSelect={(claim) => {
+            setSelectedClaim(claim);
+            setSelectedEvidenceIds([]);
+          }} />
           <QaPanel qa={qa} />
           <TraceViewer traces={traces} />
         </div>

@@ -12,6 +12,7 @@ export type Task = {
 
 export type Evidence = {
   evidence_id: string;
+  competitor?: string;
   source_type: string;
   url?: string;
   local_ref?: string;
@@ -24,6 +25,7 @@ export type Evidence = {
 
 export type Claim = {
   claim_id: string;
+  competitor?: string;
   text: string;
   category: string;
   evidence_ids: string[];

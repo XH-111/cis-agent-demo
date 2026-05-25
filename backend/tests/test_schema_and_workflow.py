@@ -115,6 +115,75 @@ def test_each_agent_run_uses_input_output_schema(db_session):
     assert qa_output.qa_result.status == "passed"
 
 
+def test_analyst_mode_mock_still_works(db_session):
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    evidence = CollectorAgent(trace_service).run(CollectorInput(task=task)).evidence
+    output = AnalystAgent(trace_service).run(AnalystInput(task=task, evidence=evidence, analyst_mode="mock"))
+    assert output.diagnostics["analyst_mode_used"] == "mock"
+    assert output.product_profile.evidence_ids
+
+
+def test_analyst_mode_evidence_extracts_features(db_session):
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    evidence = [
+        Evidence(source_type="public_web", url="https://example.com/features", source_domain="example.com", source_quality="official", snippet="The product supports AI automation, collaboration workflow, integration API, analytics and security features.", confidence=0.9),
+        Evidence(source_type="public_web", url="https://example.com/pricing", source_domain="example.com", source_quality="official", snippet="Pricing includes free trial, subscription plan and enterprise quote.", confidence=0.9),
+        Evidence(source_type="public_web", url="https://example.com/customers", source_domain="example.com", source_quality="unknown", snippet="Enterprise team, developer, marketer and product team users evaluate the product.", confidence=0.7),
+    ]
+    output = AnalystAgent(trace_service).run(AnalystInput(task=task, evidence=evidence, analyst_mode="evidence"))
+    assert output.diagnostics["analyst_mode_used"] == "evidence"
+    assert "AI" in output.feature_tree.core_features
+    assert output.feature_tree.evidence_ids
+
+
+def test_analyst_evidence_extracts_pricing_and_persona(db_session):
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    evidence = [
+        Evidence(source_type="public_web", url="https://example.com/features", source_domain="example.com", source_quality="official", snippet="AI automation collaboration workflow and API integration for teams.", confidence=0.9),
+        Evidence(source_type="public_web", url="https://example.com/pricing", source_domain="example.com", source_quality="official", snippet="Pricing page shows free trial, subscription plan and enterprise quote.", confidence=0.9),
+        Evidence(source_type="public_web", url="https://example.com/users", source_domain="example.com", source_quality="unknown", snippet="Enterprise team, developer, marketer, product team and student users are mentioned.", confidence=0.7),
+    ]
+    output = AnalystAgent(trace_service).run(AnalystInput(task=task, evidence=evidence, analyst_mode="evidence"))
+    assert output.pricing_model.evidence_ids
+    assert "pricing" in output.pricing_model.pricing_notes.lower()
+    assert output.user_persona.evidence_ids
+    assert output.user_persona.persona_name in {"企业团队", "团队用户", "开发者", "市场团队", "产品团队", "学生"}
+
+
+def test_analyst_insufficient_evidence_is_conservative_and_qa_suggests(db_session):
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    evidence = [
+        Evidence(source_type="public_web", url="https://example.com/brief", source_domain="example.com", source_quality="unknown", snippet="Brief public source.", confidence=0.6)
+    ]
+    analysis = AnalystAgent(trace_service).run(AnalystInput(task=task, evidence=evidence, analyst_mode="evidence"))
+    assert "Evidence is insufficient" in analysis.product_profile.positioning
+    claim = Claim(text="Conservative claim", category="recommendation", evidence_ids=[evidence[0].evidence_id], confidence=0.6)
+    report = Report(task_id=task.task_id, markdown="# Report", json_report={"claims": [claim.model_dump(mode="json")]}, claims=[claim])
+    qa_result = QaAgent(trace_service).run(QaInput(task=task, evidence=evidence, analysis=analysis, report_output=ReportWriterOutput(report=report))).qa_result
+    assert qa_result.status == "passed"
+    assert any("结构化分析证据不足" in suggestion for suggestion in qa_result.soft_suggestions)
+
+
+def test_analyst_trace_records_mode_and_counts(db_session):
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    evidence = [
+        Evidence(source_type="public_web", url="https://example.com/features", source_domain="example.com", source_quality="official", snippet="AI automation collaboration workflow, pricing plan and enterprise team.", confidence=0.9),
+        Evidence(source_type="public_web", url="https://example.com/pricing", source_domain="example.com", source_quality="official", snippet="Free trial subscription pricing plan for developer team.", confidence=0.9),
+        Evidence(source_type="public_web", url="https://example.com/security", source_domain="example.com", source_quality="documentation", snippet="Security analytics API integration documentation.", confidence=0.85),
+    ]
+    AnalystAgent(trace_service).run(AnalystInput(task=task, evidence=evidence, analyst_mode="evidence"))
+    trace = next(item for item in trace_service.list_for_task(task.task_id) if item.agent_name == "AnalystAgent")
+    diagnostics = json.loads(trace.output_summary)
+    assert diagnostics["analyst_mode_requested"] == "evidence"
+    assert diagnostics["analyst_mode_used"] == "evidence"
+    assert diagnostics["extracted_feature_count"] > 0
+
+
 def test_missing_evidence_routes_to_collector(db_session):
     task = make_task(db_session)
     qa = QaAgent(TraceService(db_session))
@@ -464,6 +533,144 @@ def test_collector_deduplicates_normalized_urls(db_session):
     assert output.diagnostics["raw_evidence_count"] == 2
     assert output.diagnostics["deduplicated_evidence_count"] == 1
     assert output.diagnostics["duplicate_removed_count"] == 1
+
+
+def test_collector_records_competitor_coverage(db_session):
+    class CoverageSearchClient(FakeWebSearchClient):
+        def search(self, query: str, limit: int = 5):
+            if "AlphaCI" in query:
+                return WebSearchResponse(
+                    available=True,
+                    attempted=True,
+                    success=True,
+                    results=[
+                        SearchResult(title="AlphaCI official", url="https://alphaci.example/pricing", snippet="AlphaCI pricing product features for enterprise team."),
+                        SearchResult(title="AlphaCI docs", url="https://docs.alphaci.example/features", snippet="AlphaCI documentation for AI automation workflow."),
+                    ],
+                )
+            return WebSearchResponse(
+                available=True,
+                attempted=True,
+                success=True,
+                results=[
+                    SearchResult(title="BetaIntel official", url="https://betaintel.example/pricing", snippet="BetaIntel pricing product features for enterprise team."),
+                    SearchResult(title="BetaIntel docs", url="https://docs.betaintel.example/features", snippet="BetaIntel documentation for analytics workflow."),
+                ],
+            )
+
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    output = CollectorAgent(trace_service, web_search_client=CoverageSearchClient()).run(
+        CollectorInput(task=task, collector_mode="web")
+    )
+    assert output.diagnostics["competitor_coverage"]["AlphaCI"] >= 2
+    assert output.diagnostics["competitor_coverage"]["BetaIntel"] >= 2
+    assert output.diagnostics["missing_competitors"] == []
+
+
+def test_web_collector_generates_queries_and_evidence_per_competitor(db_session):
+    class RecordingSearchClient(FakeWebSearchClient):
+        def __init__(self):
+            super().__init__()
+            self.queries = []
+
+        def search(self, query: str, limit: int = 5):
+            self.queries.append(query)
+            competitor = "AlphaCI" if "AlphaCI" in query else "BetaIntel"
+            return WebSearchResponse(
+                available=True,
+                attempted=True,
+                success=True,
+                results=[
+                    SearchResult(title=f"{competitor} official", url=f"https://{competitor.lower()}.example/pricing", snippet=f"{competitor} official pricing product features enterprise plan."),
+                    SearchResult(title=f"{competitor} docs", url=f"https://docs.{competitor.lower()}.example/features", snippet=f"{competitor} documentation shows collaboration workflow API."),
+                ],
+            )
+
+    task = make_task(db_session)
+    client = RecordingSearchClient()
+    output = CollectorAgent(TraceService(db_session), web_search_client=client).run(
+        CollectorInput(task=task, collector_mode="web")
+    )
+    assert any("AlphaCI" in query for query in client.queries)
+    assert any("BetaIntel" in query for query in client.queries)
+    assert {item.competitor for item in output.evidence} == {"AlphaCI", "BetaIntel"}
+    assert output.diagnostics["evidence_count_by_competitor"]["AlphaCI"] >= 2
+    assert output.diagnostics["evidence_count_by_competitor"]["BetaIntel"] >= 2
+
+
+def test_analyst_groups_structured_knowledge_by_competitor(db_session):
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    evidence = [
+        Evidence(competitor="AlphaCI", source_type="public_web", url="https://alphaci.example/pricing", source_domain="alphaci.example", source_quality="official", snippet="AlphaCI AI automation pricing enterprise plan for product team.", confidence=0.9),
+        Evidence(competitor="AlphaCI", source_type="public_web", url="https://alphaci.example/features", source_domain="alphaci.example", source_quality="official", snippet="AlphaCI collaboration workflow API integration for teams.", confidence=0.9),
+        Evidence(competitor="BetaIntel", source_type="public_web", url="https://betaintel.example/pricing", source_domain="betaintel.example", source_quality="official", snippet="BetaIntel pricing subscription enterprise quote.", confidence=0.9),
+        Evidence(competitor="BetaIntel", source_type="public_web", url="https://betaintel.example/features", source_domain="betaintel.example", source_quality="official", snippet="BetaIntel analytics security workflow for enterprise team.", confidence=0.9),
+    ]
+    output = AnalystAgent(trace_service).run(AnalystInput(task=task, evidence=evidence, analyst_mode="evidence"))
+    competitor_analysis = output.product_profile.custom_dimensions["competitor_analysis"]
+    assert set(competitor_analysis) == {"AlphaCI", "BetaIntel"}
+    assert all(competitor_analysis[item]["evidence_ids"] for item in task.competitors)
+    assert output.diagnostics["evidence_count_by_competitor"] == {"AlphaCI": 2, "BetaIntel": 2}
+
+
+def test_report_writer_mock_claims_cover_all_competitors(db_session):
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    evidence = CollectorAgent(trace_service).run(CollectorInput(task=task)).evidence
+    analysis = AnalystAgent(trace_service).run(AnalystInput(task=task, evidence=evidence))
+    output = ReportWriterAgent(trace_service).run(ReportWriterInput(task=task, knowledge=analysis, evidence=evidence))
+    assert output.report is not None
+    assert {claim.competitor for claim in output.report.claims} == {"AlphaCI", "BetaIntel"}
+    assert output.diagnostics["missing_claim_competitors"] == []
+
+
+def test_qa_detects_missing_competitor_evidence(db_session):
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    evidence = [
+        Evidence(competitor="AlphaCI", source_type="public_web", url="https://alphaci.example/pricing", source_domain="alphaci.example", source_quality="official", snippet="AlphaCI pricing product features.", confidence=0.9)
+    ]
+    result = QaAgent(trace_service).run(QaInput(task=task, evidence=evidence)).qa_result
+    assert result.status == "failed"
+    assert result.route_to == "CollectorAgent"
+    assert result.rework_instructions[0].failed_schema == "Evidence.competitor"
+
+
+def test_qa_detects_missing_competitor_claim(db_session):
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    evidence = [
+        Evidence(competitor="AlphaCI", source_type="public_web", url="https://alphaci.example/pricing", source_domain="alphaci.example", source_quality="official", snippet="AlphaCI pricing product features.", confidence=0.9),
+        Evidence(competitor="BetaIntel", source_type="public_web", url="https://betaintel.example/pricing", source_domain="betaintel.example", source_quality="official", snippet="BetaIntel pricing product features.", confidence=0.9),
+    ]
+    analysis = AnalystAgent(trace_service).run(AnalystInput(task=task, evidence=evidence))
+    claim = Claim(competitor="AlphaCI", text="AlphaCI supported claim", category="feature", evidence_ids=[evidence[0].evidence_id], confidence=0.8)
+    report = Report(task_id=task.task_id, markdown="# Report", json_report={"claims": [claim.model_dump(mode="json")]}, claims=[claim])
+    result = QaAgent(trace_service).run(QaInput(task=task, evidence=evidence, analysis=analysis, report_output=ReportWriterOutput(report=report))).qa_result
+    assert result.status == "failed"
+    assert result.route_to == "ReportWriterAgent"
+    assert result.rework_instructions[0].failed_schema == "Report.claims.competitor"
+
+
+def test_qa_detects_claim_using_other_competitor_evidence(db_session):
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    evidence = [
+        Evidence(competitor="AlphaCI", source_type="public_web", url="https://alphaci.example/pricing", source_domain="alphaci.example", source_quality="official", snippet="AlphaCI pricing product features.", confidence=0.9),
+        Evidence(competitor="BetaIntel", source_type="public_web", url="https://betaintel.example/pricing", source_domain="betaintel.example", source_quality="official", snippet="BetaIntel pricing product features.", confidence=0.9),
+    ]
+    analysis = AnalystAgent(trace_service).run(AnalystInput(task=task, evidence=evidence))
+    claims = [
+        Claim(competitor="AlphaCI", text="AlphaCI claim with wrong evidence", category="feature", evidence_ids=[evidence[1].evidence_id], confidence=0.8),
+        Claim(competitor="BetaIntel", text="BetaIntel supported claim", category="feature", evidence_ids=[evidence[1].evidence_id], confidence=0.8),
+    ]
+    report = Report(task_id=task.task_id, markdown="# Report", json_report={"claims": [claim.model_dump(mode="json") for claim in claims]}, claims=claims)
+    result = QaAgent(trace_service).run(QaInput(task=task, evidence=evidence, analysis=analysis, report_output=ReportWriterOutput(report=report))).qa_result
+    assert result.status == "failed"
+    assert result.route_to == "ReportWriterAgent"
+    assert result.rework_instructions[0].failed_schema == "Claim.evidence_ids"
 
 
 def test_url_tracking_params_are_ignored():

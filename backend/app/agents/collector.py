@@ -14,6 +14,8 @@ QUALITY_CONFIDENCE = {
     "unknown": 0.6,
     "low_quality": 0.4,
 }
+MIN_EVIDENCE_PER_COMPETITOR = 2
+MAX_EVIDENCE_PER_COMPETITOR = 5
 
 
 class CollectorAgent:
@@ -41,7 +43,7 @@ class CollectorAgent:
             to_agent="AnalystAgent",
             message_type="evidence",
             schema_name="CollectorOutput",
-            input_summary=f"collector_mode_requested={input_data.collector_mode}; 为 {task.region} 的 {task.industry} 场景采集证据",
+            input_summary=f"collector_mode_requested={input_data.collector_mode}; collect evidence for {len(task.competitors)} competitors",
             retry_count=input_data.retry_count,
             fn=produce,
         )
@@ -56,12 +58,17 @@ class CollectorAgent:
             "web_search_attempted": False,
             "web_search_success": False,
             "query_count": 0,
+            "query_count_by_competitor": {},
             "evidence_count": 0,
+            "evidence_count_by_competitor": {},
             "raw_evidence_count": 0,
             "deduplicated_evidence_count": 0,
             "duplicate_removed_count": 0,
             "source_quality_summary": {},
             "low_confidence_count": 0,
+            "competitor_coverage": {},
+            "missing_competitors": [],
+            "fallback_by_competitor": {},
             "fallback_used": False,
             "fallback_reason": None,
             "elapsed_time_ms": 0,
@@ -69,55 +76,77 @@ class CollectorAgent:
 
     def _collect_web(self, input_data: CollectorInput, diagnostics: dict) -> CollectorOutput | None:
         task = input_data.task
-        queries = []
-        for competitor in task.competitors:
-            queries.append(f"{competitor} {task.industry} pricing features official")
-            queries.append(f"{competitor} {task.industry} 功能 定价 官网")
-
         evidence: list[Evidence] = []
-        seen_urls: set[str] = set()
         raw_count = 0
         fallback_reason: str | None = None
         total_elapsed = 0
-        for query in queries:
-            response = self.web_search_client.search(query, limit=3)
-            diagnostics["web_search_attempted"] = diagnostics["web_search_attempted"] or response.attempted
-            total_elapsed += response.elapsed_time_ms
-            if not response.available:
-                fallback_reason = response.fallback_reason or response.error_message or "Web search unavailable."
-                break
-            for result in response.results:
-                raw_count += 1
-                normalized_url = self.normalize_url(result.url)
-                if normalized_url in seen_urls:
-                    continue
-                seen_urls.add(normalized_url)
-                quality = self._source_quality(normalized_url, result.title, result.snippet, task.competitors)
-                confidence = self._confidence_for_result(normalized_url, result.snippet, quality, result.score)
-                evidence.append(
-                    Evidence(
-                        source_type="public_web",
-                        url=normalized_url,
-                        source_domain=self.extract_source_domain(normalized_url),
-                        source_quality=quality,
-                        snippet=self._snippet(result.title, result.snippet),
-                        confidence=confidence,
-                    )
-                )
-                if len(evidence) >= 5:
+        seen_keys: set[tuple[str, str]] = set()
+        buckets: dict[str, list[Evidence]] = {competitor: [] for competitor in task.competitors}
+        query_count_by_competitor: dict[str, int] = {competitor: 0 for competitor in task.competitors}
+        fallback_by_competitor: dict[str, str | None] = {competitor: None for competitor in task.competitors}
+
+        for competitor in task.competitors:
+            for query in self._queries_for_competitor(competitor, task.industry):
+                if len(buckets[competitor]) >= MAX_EVIDENCE_PER_COMPETITOR:
                     break
-            if len(evidence) >= 5:
+                query_count_by_competitor[competitor] += 1
+                response = self.web_search_client.search(query, limit=5)
+                diagnostics["web_search_attempted"] = diagnostics["web_search_attempted"] or response.attempted
+                total_elapsed += response.elapsed_time_ms
+                if not response.available:
+                    fallback_reason = response.fallback_reason or response.error_message or "Web search unavailable."
+                    fallback_by_competitor[competitor] = fallback_reason
+                    break
+
+                for result in response.results:
+                    raw_count += 1
+                    normalized_url = self.normalize_url(result.url)
+                    dedupe_key = (competitor, normalized_url)
+                    if dedupe_key in seen_keys:
+                        continue
+                    seen_keys.add(dedupe_key)
+                    quality = self._source_quality(normalized_url, result.title, result.snippet, task.competitors)
+                    confidence = self._confidence_for_result(normalized_url, result.snippet, quality, result.score)
+                    buckets[competitor].append(
+                        Evidence(
+                            competitor=competitor,
+                            source_type="public_web",
+                            url=normalized_url,
+                            source_domain=self.extract_source_domain(normalized_url),
+                            source_quality=quality,
+                            snippet=self._snippet(result.title, result.snippet),
+                            confidence=confidence,
+                        )
+                    )
+                    if len(buckets[competitor]) >= MAX_EVIDENCE_PER_COMPETITOR:
+                        break
+                if fallback_reason or len(buckets[competitor]) >= MIN_EVIDENCE_PER_COMPETITOR:
+                    break
+            if fallback_reason:
                 break
 
+        for competitor in task.competitors:
+            evidence.extend(buckets[competitor])
+
+        evidence_count_by_competitor = {competitor: len(buckets[competitor]) for competitor in task.competitors}
+        missing_competitors = [
+            competitor for competitor, count in evidence_count_by_competitor.items() if count < MIN_EVIDENCE_PER_COMPETITOR
+        ]
         diagnostics.update(
             {
-                "query_count": len(queries),
+                "collector_mode_used": "web",
+                "query_count": sum(query_count_by_competitor.values()),
+                "query_count_by_competitor": query_count_by_competitor,
                 "evidence_count": len(evidence),
+                "evidence_count_by_competitor": evidence_count_by_competitor,
                 "raw_evidence_count": raw_count,
                 "deduplicated_evidence_count": len(evidence),
                 "duplicate_removed_count": raw_count - len(evidence),
                 "source_quality_summary": self._quality_summary(evidence),
                 "low_confidence_count": sum(1 for item in evidence if item.confidence < 0.5),
+                "competitor_coverage": evidence_count_by_competitor,
+                "missing_competitors": missing_competitors,
+                "fallback_by_competitor": fallback_by_competitor,
                 "elapsed_time_ms": total_elapsed,
             }
         )
@@ -135,81 +164,73 @@ class CollectorAgent:
 
         diagnostics.update(
             {
-                "collector_mode_used": "web",
                 "web_search_success": True,
                 "fallback_used": False,
                 "fallback_reason": None,
-                "evidence_count": len(evidence),
             }
         )
         return CollectorOutput(evidence=evidence, diagnostics=diagnostics)
 
     def _mock_output(self, input_data: CollectorInput, diagnostics: dict | None = None) -> CollectorOutput:
         task = input_data.task
-        competitors = task.competitors[:2]
         diagnostics = diagnostics or self._base_diagnostics(input_data)
+        evidence: list[Evidence] = []
+        for competitor in task.competitors:
+            evidence.extend(
+                [
+                    Evidence(
+                        competitor=competitor,
+                        source_type="web",
+                        url=f"https://example.com/{competitor.lower()}-product",
+                        source_domain="example.com",
+                        source_quality="unknown",
+                        snippet=f"{competitor} public product page mentions {task.industry} features, collaboration workflow, and target users.",
+                        confidence=0.78,
+                    ),
+                    Evidence(
+                        competitor=competitor,
+                        source_type="pricing_page",
+                        url=f"https://example.com/{competitor.lower()}-pricing",
+                        source_domain="example.com",
+                        source_quality="official",
+                        snippet=f"{competitor} pricing page mentions paid plans, enterprise options, subscriptions, and product capabilities.",
+                        confidence=0.86,
+                    ),
+                ]
+            )
+        evidence_count_by_competitor = {competitor: 2 for competitor in task.competitors}
         diagnostics.update(
             {
                 "collector_mode_used": "mock",
-                "evidence_count": 4 + (1 if len(competitors) > 1 else 0),
-            }
-        )
-        evidence = [
-            Evidence(
-                source_type="web",
-                url=f"https://example.com/{task.product_name.lower()}-positioning",
-                source_domain="example.com",
-                source_quality="unknown",
-                snippet=f"{task.product_name} 强调面向 {task.industry} 的自动化竞品研究工作流。",
-                confidence=0.86,
-            ),
-            Evidence(
-                source_type="pricing_page",
-                url=f"https://example.com/{competitors[0].lower()}-pricing",
-                source_domain="example.com",
-                source_quality="official",
-                snippet=f"{competitors[0]} 公开了分层定价，并将团队协作能力放在核心套餐中。",
-                confidence=0.82,
-            ),
-            Evidence(
-                source_type="review",
-                url=f"https://example.com/reviews/{competitors[0].lower()}",
-                source_domain="example.com",
-                source_quality="review",
-                snippet="用户认可快速上手能力，但希望生成报告中的来源引用更加清晰。",
-                confidence=0.78,
-            ),
-            Evidence(
-                source_type="document",
-                local_ref="mock://industry-feature-matrix",
-                source_domain="mock",
-                source_quality="documentation",
-                snippet="常见采购诉求包括证据可追溯、用户画像映射和可复用报告模板。",
-                confidence=0.8,
-            ),
-        ]
-        if len(competitors) > 1:
-            evidence.append(
-                Evidence(
-                    source_type="web",
-                    url=f"https://example.com/{competitors[1].lower()}-features",
-                    source_domain="example.com",
-                    source_quality="unknown",
-                    snippet=f"{competitors[1]} 突出强调广泛集成能力和工作流仪表盘。",
-                    confidence=0.76,
-                )
-            )
-        diagnostics.update(
-            {
                 "evidence_count": len(evidence),
+                "evidence_count_by_competitor": evidence_count_by_competitor,
                 "raw_evidence_count": len(evidence),
                 "deduplicated_evidence_count": len(evidence),
                 "duplicate_removed_count": 0,
                 "source_quality_summary": self._quality_summary(evidence),
                 "low_confidence_count": sum(1 for item in evidence if item.confidence < 0.5),
+                "competitor_coverage": evidence_count_by_competitor,
+                "missing_competitors": [],
+                "fallback_by_competitor": {competitor: None for competitor in task.competitors},
             }
         )
         return CollectorOutput(evidence=evidence, diagnostics=diagnostics)
+
+    @staticmethod
+    def _queries_for_competitor(competitor: str, industry: str) -> list[str]:
+        has_chinese = any("\u4e00" <= char <= "\u9fff" for char in competitor)
+        if has_chinese:
+            return [
+                f"{competitor} 官网 功能 定价 企业版",
+                f"{competitor} 产品介绍 协作 办公",
+                f"{competitor} pricing features official",
+                f"{competitor} official pricing features product",
+            ]
+        return [
+            f"{competitor} official pricing features product",
+            f"{competitor} {industry} pricing features official",
+            f"{competitor} product documentation pricing",
+        ]
 
     @staticmethod
     def _snippet(title: str, snippet: str) -> str:
@@ -240,7 +261,12 @@ class CollectorAgent:
             token in host for token in ("docs.", "developer.", "help.", "support.")
         ):
             return "documentation"
-        competitor_tokens = [self_token for competitor in competitors for self_token in competitor.lower().replace(" ", "").split(",") if self_token]
+        competitor_tokens = [
+            self_token
+            for competitor in competitors
+            for self_token in competitor.lower().replace(" ", "").split(",")
+            if self_token
+        ]
         if any(token in host.replace("-", "").replace(".", "") for token in competitor_tokens) or any(
             token in path for token in ("official", "pricing", "product", "features")
         ):

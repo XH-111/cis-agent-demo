@@ -49,6 +49,7 @@ class MockWorkflowRunner:
         auto_rework: bool = False,
         writer_mode: str = "mock",
         collector_mode: str = "mock",
+        analyst_mode: str = "evidence",
     ) -> dict:
         task = self.task_service.update_status(task_id, "running")
         plan = self.planner.run(PlannerInput(task=task))
@@ -70,6 +71,7 @@ class MockWorkflowRunner:
                 writer_output=None,
                 writer_mode=writer_mode,
                 collector_mode=collector_mode,
+                analyst_mode=analyst_mode,
             )
 
         evidence, analysis, writer_output = self._produce_outputs(
@@ -78,6 +80,7 @@ class MockWorkflowRunner:
             retry_count=0,
             writer_mode=writer_mode,
             collector_mode=collector_mode,
+            analyst_mode=analyst_mode,
         )
 
         qa_result = self.qa.run(
@@ -106,6 +109,7 @@ class MockWorkflowRunner:
                 writer_output=writer_output,
                 writer_mode=writer_mode,
                 collector_mode=collector_mode,
+                analyst_mode=analyst_mode,
             )
 
         return self._finalize_or_fail(task, plan, qa_result, history, evidence, writer_output)
@@ -118,6 +122,7 @@ class MockWorkflowRunner:
         retry_count: int,
         writer_mode: str,
         collector_mode: str,
+        analyst_mode: str,
         evidence: list[Evidence] | None = None,
         analysis: AnalystOutput | None = None,
     ) -> tuple[list[Evidence], AnalystOutput, ReportWriterOutput]:
@@ -135,6 +140,7 @@ class MockWorkflowRunner:
                     evidence=evidence,
                     retry_count=retry_count,
                     force_invalid_extraction=demo_mode == "qa_invalid_extraction",
+                    analyst_mode=analyst_mode,
                 )
             )
 
@@ -162,6 +168,7 @@ class MockWorkflowRunner:
         writer_output: ReportWriterOutput | None,
         writer_mode: str,
         collector_mode: str,
+        analyst_mode: str,
     ) -> dict:
         current_task = task
         current_qa = qa_result
@@ -200,7 +207,7 @@ class MockWorkflowRunner:
                 current_evidence = collector_output.evidence
                 self.evidence_service.save_many(current_task.task_id, current_evidence)
                 current_analysis = self.analyst.run(
-                    AnalystInput(task=current_task, evidence=current_evidence, retry_count=current_qa.rework_count)
+                    AnalystInput(task=current_task, evidence=current_evidence, retry_count=current_qa.rework_count, analyst_mode=analyst_mode)
                 )
                 current_writer_output = self.writer.run(
                     ReportWriterInput(
@@ -213,7 +220,7 @@ class MockWorkflowRunner:
                 )
             elif current_qa.route_to == "AnalystAgent":
                 current_analysis = self.analyst.run(
-                    AnalystInput(task=current_task, evidence=current_evidence, retry_count=current_qa.rework_count)
+                    AnalystInput(task=current_task, evidence=current_evidence, retry_count=current_qa.rework_count, analyst_mode=analyst_mode)
                 )
                 current_writer_output = self.writer.run(
                     ReportWriterInput(
@@ -227,7 +234,7 @@ class MockWorkflowRunner:
             elif current_qa.route_to == "ReportWriterAgent":
                 if current_analysis is None:
                     current_analysis = self.analyst.run(
-                        AnalystInput(task=current_task, evidence=current_evidence, retry_count=current_qa.rework_count)
+                        AnalystInput(task=current_task, evidence=current_evidence, retry_count=current_qa.rework_count, analyst_mode=analyst_mode)
                     )
                 current_writer_output = self.writer.run(
                     ReportWriterInput(

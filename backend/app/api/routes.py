@@ -65,6 +65,7 @@ def run_task(
     auto_rework: bool = Query(False),
     writer_mode: str = Query("mock", pattern="^(mock|llm)$"),
     collector_mode: str = Query("mock", pattern="^(mock|web)$"),
+    analyst_mode: str = Query("evidence", pattern="^(mock|evidence|llm)$"),
     db: Session = Depends(get_db),
 ):
     try:
@@ -74,6 +75,7 @@ def run_task(
             auto_rework=auto_rework,
             writer_mode=writer_mode,
             collector_mode=collector_mode,
+            analyst_mode=analyst_mode,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Task not found") from exc

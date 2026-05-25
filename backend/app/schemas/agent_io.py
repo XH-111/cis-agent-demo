@@ -34,6 +34,7 @@ class AnalystInput(BaseModel):
     evidence: list[Evidence]
     retry_count: int = 0
     force_invalid_extraction: bool = False
+    analyst_mode: Literal["mock", "evidence", "llm"] = "evidence"
 
 
 class AnalystOutput(BaseModel):
@@ -41,6 +42,7 @@ class AnalystOutput(BaseModel):
     feature_tree: FeatureTree
     pricing_model: PricingModel
     user_persona: UserPersona
+    diagnostics: dict = Field(default_factory=dict)
 
 
 class ReportWriterInput(BaseModel):

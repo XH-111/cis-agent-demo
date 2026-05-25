@@ -1,7 +1,8 @@
 import type { Claim, Evidence } from "../types";
 
-export function EvidencePanel({ claim, evidence }: { claim?: Claim; evidence: Evidence[] }) {
-  const related = (claim ? evidence.filter((item) => claim.evidence_ids.includes(item.evidence_id)) : evidence)
+export function EvidencePanel({ claim, evidence, evidenceIds }: { claim?: Claim; evidence: Evidence[]; evidenceIds?: string[] }) {
+  const selectedIds = evidenceIds?.length ? evidenceIds : undefined;
+  const related = (claim ? evidence.filter((item) => claim.evidence_ids.includes(item.evidence_id)) : selectedIds ? evidence.filter((item) => selectedIds.includes(item.evidence_id)) : evidence)
     .sort((a, b) => b.confidence - a.confidence);
   return (
     <section className="rounded border border-line bg-white p-4">
@@ -15,6 +16,7 @@ export function EvidencePanel({ claim, evidence }: { claim?: Claim; evidence: Ev
         {related.map((item) => (
           <div key={item.evidence_id} className={`rounded border p-3 text-sm ${item.confidence < 0.5 ? "border-amber-300 bg-amber-50" : "border-line bg-panel"}`}>
             <div className="font-semibold">{item.evidence_id} · {item.source_type}</div>
+            <div className="mt-1 text-xs text-slate-600">competitor: {item.competitor ?? "-"}</div>
             <div className="mt-2 text-slate-700">{item.snippet}</div>
             <div className="mt-2 break-all text-xs text-slate-500">{item.url ?? item.local_ref}</div>
             <div className="mt-2 grid gap-1 text-xs text-slate-600">

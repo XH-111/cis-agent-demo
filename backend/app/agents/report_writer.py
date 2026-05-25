@@ -47,6 +47,8 @@ class ReportWriterAgent:
             "llm_schema_validation_success": None,
             "llm_schema_validation_errors": [],
             "llm_category_normalization_count": 0,
+            "claim_count_by_competitor": {},
+            "missing_claim_competitors": [],
             "fallback_used": False,
             "llm_fallback_reason": None,
         }
@@ -69,27 +71,8 @@ class ReportWriterAgent:
                     "llm_fallback_reason": fallback_reason,
                 }
             )
-            ids = knowledge.product_profile.evidence_ids
-            raw_claims = [
-                {
-                    "text": f"{task.product_name} should compete on auditable report generation, not only raw collection.",
-                    "category": "positioning",
-                    "evidence_ids": [] if input_data.simulate_missing_evidence else ids,
-                    "confidence": 0.84,
-                },
-                {
-                    "text": "Pricing comparison should emphasize collaboration tiers and evidence governance.",
-                    "category": "pricing",
-                    "evidence_ids": knowledge.pricing_model.evidence_ids,
-                    "confidence": 0.8,
-                },
-                {
-                    "text": "Primary users need faster repeatable workflows with source-backed recommendations.",
-                    "category": "persona",
-                    "evidence_ids": knowledge.user_persona.evidence_ids,
-                    "confidence": 0.82,
-                },
-            ]
+            raw_claims = self._mock_claim_payloads(input_data)
+            diagnostics.update(self._coverage_diagnostics(task.competitors, raw_claims))
             if input_data.simulate_missing_evidence:
                 return ReportWriterOutput(
                     draft_report={"claims": raw_claims, "markdown": "# Draft\n\nInvalid claim missing evidence."},
@@ -107,7 +90,10 @@ class ReportWriterAgent:
                     f"{task.product_name} can differentiate through structured outputs, QA routing, and source-backed claims.",
                     "",
                     "## Key Claims",
-                    *[f"- **{claim.claim_id}** {claim.text} Evidence: {', '.join(claim.evidence_ids)}" for claim in claims],
+                    *[
+                        f"- **{claim.competitor or 'overall'} / {claim.claim_id}** {claim.text} Evidence: {', '.join(claim.evidence_ids)}"
+                        for claim in claims
+                    ],
                 ]
             )
             if input_data.force_bad_format:
@@ -119,6 +105,7 @@ class ReportWriterAgent:
                 json_report={
                     "knowledge": knowledge.model_dump(mode="json"),
                     "claims": [claim.model_dump(mode="json") for claim in claims],
+                    "competitor_coverage": self._coverage_diagnostics(task.competitors, [claim.model_dump(mode="json") for claim in claims]),
                     "writer_mode": "mock",
                     "llm_fallback_reason": fallback_reason,
                     "writer_diagnostics": diagnostics,
@@ -226,6 +213,7 @@ class ReportWriterAgent:
                 claims = [
                     Claim(
                         claim_id=claim["claim_id"],
+                        competitor=claim.get("competitor"),
                         text=claim["text"],
                         evidence_ids=claim["evidence_ids"],
                         category=claim.get("category", "recommendation"),
@@ -255,6 +243,7 @@ class ReportWriterAgent:
                     "llm_schema_validation_success": True,
                     "llm_schema_validation_errors": [],
                     "llm_category_normalization_count": normalized_count,
+                    **self._coverage_diagnostics(task.competitors, [claim.model_dump(mode="json") for claim in claims]),
                 }
             )
             report = Report(
@@ -263,6 +252,7 @@ class ReportWriterAgent:
                 json_report={
                     **(payload.get("json_report") if isinstance(payload.get("json_report"), dict) else {}),
                     "claims": [claim.model_dump(mode="json") for claim in claims],
+                    "competitor_coverage": self._coverage_diagnostics(task.competitors, [claim.model_dump(mode="json") for claim in claims]),
                     "writer_mode": "llm",
                     "writer_diagnostics": diagnostics,
                 },
@@ -291,12 +281,8 @@ class ReportWriterAgent:
     ) -> ReportWriterOutput:
         task = input_data.task
         knowledge = input_data.knowledge
-        ids = knowledge.product_profile.evidence_ids
-        claims = [
-            Claim(text=f"{task.product_name} should compete on auditable report generation, not only raw collection.", category="positioning", evidence_ids=ids, confidence=0.84),
-            Claim(text="Pricing comparison should emphasize collaboration tiers and evidence governance.", category="pricing", evidence_ids=knowledge.pricing_model.evidence_ids, confidence=0.8),
-            Claim(text="Primary users need faster repeatable workflows with source-backed recommendations.", category="persona", evidence_ids=knowledge.user_persona.evidence_ids, confidence=0.82),
-        ]
+        claims = [Claim(**item) for item in self._mock_claim_payloads(input_data)]
+        diagnostics.update(self._coverage_diagnostics(task.competitors, [claim.model_dump(mode="json") for claim in claims]))
         markdown = "\n".join(
             [
                 f"# Competitor Analysis Report: {task.product_name}",
@@ -305,7 +291,10 @@ class ReportWriterAgent:
                 f"{task.product_name} can differentiate through structured outputs, QA routing, and source-backed claims.",
                 "",
                 "## Key Claims",
-                *[f"- **{claim.claim_id}** {claim.text} Evidence: {', '.join(claim.evidence_ids)}" for claim in claims],
+                *[
+                    f"- **{claim.competitor or 'overall'} / {claim.claim_id}** {claim.text} Evidence: {', '.join(claim.evidence_ids)}"
+                    for claim in claims
+                ],
             ]
         )
         report = Report(
@@ -314,6 +303,7 @@ class ReportWriterAgent:
             json_report={
                 "knowledge": knowledge.model_dump(mode="json"),
                 "claims": [claim.model_dump(mode="json") for claim in claims],
+                "competitor_coverage": self._coverage_diagnostics(task.competitors, [claim.model_dump(mode="json") for claim in claims]),
                 "writer_mode": "mock",
                 "llm_fallback_reason": fallback_reason,
                 "writer_diagnostics": diagnostics,
@@ -322,6 +312,67 @@ class ReportWriterAgent:
             qa_result=QaResult(task_id=task.task_id, status="passed"),
         )
         return ReportWriterOutput(report=report, writer_mode="mock", llm_fallback_reason=fallback_reason, diagnostics=diagnostics)
+
+    @staticmethod
+    def _evidence_ids_by_competitor(input_data: ReportWriterInput) -> dict[str, list[str]]:
+        grouped = {competitor: [] for competitor in input_data.task.competitors}
+        for item in input_data.evidence:
+            if item.competitor in grouped:
+                grouped[item.competitor].append(item.evidence_id)
+        if not any(grouped.values()):
+            competitor_analysis = input_data.knowledge.product_profile.custom_dimensions.get("competitor_analysis", {})
+            if isinstance(competitor_analysis, dict):
+                for competitor, details in competitor_analysis.items():
+                    if competitor in grouped and isinstance(details, dict):
+                        ids = details.get("evidence_ids")
+                        if isinstance(ids, list):
+                            grouped[competitor] = [str(item) for item in ids if item]
+        if not any(grouped.values()) and len(input_data.task.competitors) == 1:
+            grouped[input_data.task.competitors[0]] = input_data.knowledge.product_profile.evidence_ids
+        return grouped
+
+    def _mock_claim_payloads(self, input_data: ReportWriterInput) -> list[dict[str, Any]]:
+        grouped = self._evidence_ids_by_competitor(input_data)
+        claims: list[dict[str, Any]] = []
+        for index, competitor in enumerate(input_data.task.competitors, start=1):
+            ids = grouped.get(competitor, [])
+            if not ids:
+                continue
+            claims.append(
+                {
+                    "claim_id": f"claim_{index:03d}",
+                    "competitor": competitor,
+                    "text": f"{competitor} must be evaluated with its own evidence; current signals show product, pricing, and user-fit information.",
+                    "category": "positioning",
+                    "evidence_ids": [] if input_data.simulate_missing_evidence and index == 1 else ids[:2],
+                    "confidence": 0.82,
+                }
+            )
+        if not claims:
+            ids = input_data.knowledge.product_profile.evidence_ids
+            claims.append(
+                {
+                    "claim_id": "claim_001",
+                    "competitor": None,
+                    "text": "Current public evidence is insufficient for competitor-specific claims.",
+                    "category": "risk",
+                    "evidence_ids": [] if input_data.simulate_missing_evidence else ids,
+                    "confidence": 0.55,
+                }
+            )
+        return claims
+
+    @staticmethod
+    def _coverage_diagnostics(competitors: list[str], claim_payloads: list[dict[str, Any]]) -> dict[str, Any]:
+        claim_count_by_competitor = {competitor: 0 for competitor in competitors}
+        for claim in claim_payloads:
+            competitor = claim.get("competitor")
+            if competitor in claim_count_by_competitor:
+                claim_count_by_competitor[competitor] += 1
+        return {
+            "claim_count_by_competitor": claim_count_by_competitor,
+            "missing_claim_competitors": [competitor for competitor, count in claim_count_by_competitor.items() if count == 0],
+        }
 
     def _messages(self, input_data: ReportWriterInput) -> list[dict[str, str]]:
         prompt_data: dict[str, Any] = {
@@ -332,6 +383,9 @@ class ReportWriterAgent:
         system = (
             "You are ReportWriterAgent. Write only from supplied Evidence and Knowledge. "
             "Do not invent sources. Every key claim must bind evidence_ids. "
+            "You must cover every input competitor. Each competitor needs its own subsection and at least one claim when its own evidence exists. "
+            "Never use one competitor's evidence_ids to support another competitor's claim. "
+            "If a competitor lacks evidence, write '当前公开证据不足，暂不做强结论。' and do not fabricate. "
             "Return strict JSON only. If evidence is insufficient, write '证据不足' instead of fabricating. "
             "For claims[].category, use only one of these exact enum values: "
             "positioning, feature, pricing, persona, risk, recommendation. "
@@ -340,10 +394,11 @@ class ReportWriterAgent:
         )
         user = (
             "Return JSON with keys markdown_report, json_report, claims. "
-            "Each claim must include claim_id, text, evidence_ids, category, confidence. "
+            "Each claim must include claim_id, competitor, text, evidence_ids, category, confidence. "
             "claims[].category must be exactly one of: positioning, feature, pricing, persona, risk, recommendation. "
+            "claims[].competitor must be one of the input competitors. "
             "Example claim: "
-            '{"claim_id":"claim_1","text":"source-backed conclusion","category":"positioning","evidence_ids":["ev_1"],"confidence":0.82}. '
+            '{"claim_id":"claim_1","competitor":"Feishu","text":"source-backed conclusion","category":"positioning","evidence_ids":["ev_1"],"confidence":0.82}. '
             "Input:\n"
             f"{prompt_data}"
         )

@@ -7,16 +7,27 @@ import { EvidencePanel } from "./EvidencePanel";
 export function ReportView({
   report,
   evidence,
+  competitors,
   selectedClaim,
+  selectedEvidenceIds,
   onSelect
 }: {
   report?: Report;
   evidence: Evidence[];
+  competitors?: string[];
   selectedClaim?: Claim;
+  selectedEvidenceIds?: string[];
   onSelect: (claim: Claim) => void;
 }) {
   const [showJson, setShowJson] = useState(false);
   if (!report) return null;
+
+  const coverage = (competitors ?? Array.from(new Set([...evidence.map((item) => item.competitor).filter(Boolean), ...report.claims.map((item) => item.competitor).filter(Boolean)])) as string[])
+    .map((competitor) => ({
+      competitor,
+      evidenceCount: evidence.filter((item) => item.competitor === competitor).length,
+      claimCount: report.claims.filter((item) => item.competitor === competitor).length,
+    }));
 
   return (
     <section className="grid gap-4 bg-white p-4 lg:grid-cols-[minmax(0,1fr)_420px]">
@@ -34,6 +45,27 @@ export function ReportView({
       </div>
 
       <div className="space-y-3">
+        {coverage.length > 0 && (
+          <section className="rounded border border-line bg-white p-4">
+            <h3 className="mb-3 text-sm font-semibold">竞品覆盖情况</h3>
+            <div className="space-y-2 text-sm">
+              {coverage.map((item) => (
+                <div
+                  key={item.competitor}
+                  className={`rounded border px-3 py-2 ${
+                    item.evidenceCount === 0 || item.claimCount === 0
+                      ? "border-amber-300 bg-amber-50 text-warning"
+                      : "border-green-300 bg-green-50 text-success"
+                  }`}
+                >
+                  <span className="font-semibold">{item.competitor}</span>
+                  <span className="ml-2">Evidence {item.evidenceCount} 条 / Claim {item.claimCount} 条</span>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
         <section className="rounded border border-line bg-white p-4">
           <h3 className="mb-3 text-sm font-semibold">Claim 列表</h3>
           <div className="space-y-2">
@@ -43,7 +75,7 @@ export function ReportView({
                 onClick={() => onSelect(claim)}
                 className={`block w-full rounded border p-3 text-left text-sm ${selectedClaim?.claim_id === claim.claim_id ? "border-accent bg-blue-50" : "border-line bg-panel"} ${claim.evidence_ids.length ? "" : "border-danger bg-red-50"}`}
               >
-                <div className="font-semibold">{categoryLabel[claim.category] ?? claim.category} · 置信度 {Math.round(claim.confidence * 100)}%</div>
+                <div className="font-semibold">{claim.competitor ? `${claim.competitor} · ` : ""}{categoryLabel[claim.category] ?? claim.category} · 置信度 {Math.round(claim.confidence * 100)}%</div>
                 <div className="mt-1">{claim.text}</div>
                 <div className={`mt-2 text-xs ${claim.evidence_ids.length ? "text-slate-600" : "font-semibold text-danger"}`}>
                   {claim.evidence_ids.length ? `证据：${claim.evidence_ids.join(", ")}` : "缺少 evidence_ids"}
@@ -52,7 +84,7 @@ export function ReportView({
             ))}
           </div>
         </section>
-        <EvidencePanel claim={selectedClaim} evidence={evidence} />
+        <EvidencePanel claim={selectedClaim} evidence={evidence} evidenceIds={selectedEvidenceIds} />
       </div>
     </section>
   );
