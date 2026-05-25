@@ -10,7 +10,8 @@ export type {
   Task,
   TraceRecord,
   LlmStatus,
-  WriterDiagnostics
+  WriterDiagnostics,
+  WorkflowSummary
 } from "./api/types";
 
 export type DemoMode = "normal" | "qa_missing_evidence" | "qa_invalid_extraction" | "qa_bad_report";

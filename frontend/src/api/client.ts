@@ -17,8 +17,8 @@ export const api = {
   createTask: (payload: { product_name: string; competitors: string[]; region: string; industry: string }) =>
     request<Task>("/api/tasks", { method: "POST", body: JSON.stringify(payload) }),
   listTasks: () => request<Task[]>("/api/tasks"),
-  runTask: (taskId: string, demoMode = "normal", autoRework = false, writerMode = "mock", collectorMode = "mock", analystMode = "evidence") =>
-    request(`/api/tasks/${taskId}/run?demo_mode=${encodeURIComponent(demoMode)}&auto_rework=${autoRework}&writer_mode=${encodeURIComponent(writerMode)}&collector_mode=${encodeURIComponent(collectorMode)}&analyst_mode=${encodeURIComponent(analystMode)}`, { method: "POST" }),
+  runTask: (taskId: string, demoMode = "normal", autoRework = false, writerMode = "mock", collectorMode = "mock", analystMode = "evidence", workflowEngine = "custom") =>
+    request(`/api/tasks/${taskId}/run?demo_mode=${encodeURIComponent(demoMode)}&auto_rework=${autoRework}&writer_mode=${encodeURIComponent(writerMode)}&collector_mode=${encodeURIComponent(collectorMode)}&analyst_mode=${encodeURIComponent(analystMode)}&workflow_engine=${encodeURIComponent(workflowEngine)}`, { method: "POST" }),
   dag: (taskId: string) => request<Dag>(`/api/tasks/${taskId}/dag`),
   evidence: (taskId: string) => request<Evidence[]>(`/api/tasks/${taskId}/evidence`),
   qa: (taskId: string) => request<QaResult>(`/api/tasks/${taskId}/qa`),

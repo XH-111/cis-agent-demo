@@ -93,6 +93,17 @@ export type SearchTestResult = {
   error_message?: string | null;
 };
 
+export type WorkflowSummary = {
+  workflow_engine_requested?: string;
+  workflow_engine_used?: string;
+  node_sequence?: string[];
+  conditional_routes_taken?: Array<{ from_node?: string; to_node?: string; reason?: string; rework_count?: number }>;
+  rework_count?: number;
+  final_status?: string;
+  elapsed_time_ms?: number;
+  error_message?: string | null;
+};
+
 export type CollectorDiagnostics = {
   collector_mode_requested?: string;
   collector_mode_used?: string;

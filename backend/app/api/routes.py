@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.agents.runner import MockWorkflowRunner, default_dag
+from app.agents.runner import default_dag
+from app.agents.runner_factory import create_workflow_runner
 from app.database import get_db
 from app.schemas import CreateTaskRequest
 from app.services.evidence_service import EvidenceService
@@ -66,10 +67,24 @@ def run_task(
     writer_mode: str = Query("mock", pattern="^(mock|llm)$"),
     collector_mode: str = Query("mock", pattern="^(mock|web)$"),
     analyst_mode: str = Query("evidence", pattern="^(mock|evidence|llm)$"),
+    workflow_engine: str | None = Query(None, pattern="^(custom|langgraph)$"),
+    content_mode: str | None = Query(None),
     db: Session = Depends(get_db),
 ):
     try:
-        return MockWorkflowRunner(db).run(
+        runner, engine = create_workflow_runner(db, workflow_engine)
+        if engine == "langgraph":
+            return runner.run(
+                task_id,
+                demo_mode=demo_mode,
+                auto_rework=auto_rework,
+                writer_mode=writer_mode,
+                collector_mode=collector_mode,
+                analyst_mode=analyst_mode,
+                workflow_engine_requested=workflow_engine or "env/default",
+                content_mode=content_mode,
+            )
+        result = runner.run(
             task_id,
             demo_mode=demo_mode,
             auto_rework=auto_rework,
@@ -77,6 +92,15 @@ def run_task(
             collector_mode=collector_mode,
             analyst_mode=analyst_mode,
         )
+        result["workflow_summary"] = {
+            "workflow_engine_requested": workflow_engine or "env/default",
+            "workflow_engine_used": "custom",
+            "node_sequence": ["planner", "collector", "analyst", "report_writer", "qa"] + (["final_report"] if result.get("report") else []),
+            "conditional_routes_taken": [],
+            "rework_count": result["qa_result"].rework_count if result.get("qa_result") else 0,
+            "final_status": result["qa_result"].status if result.get("qa_result") else "failed",
+        }
+        return result
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Task not found") from exc
 

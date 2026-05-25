@@ -9,7 +9,7 @@ import { ReportView } from "./components/ReportView";
 import { TaskForm } from "./components/TaskForm";
 import { TaskList } from "./components/TaskList";
 import { TraceViewer } from "./components/TraceViewer";
-import type { Claim, CollectorDiagnostics, CollectorStatus, Dag, DemoMode, Evidence, LlmStatus, QaResult, Report, SearchTestResult, Task, TraceRecord, WriterDiagnostics } from "./types";
+import type { Claim, CollectorDiagnostics, CollectorStatus, Dag, DemoMode, Evidence, LlmStatus, QaResult, Report, SearchTestResult, Task, TraceRecord, WriterDiagnostics, WorkflowSummary } from "./types";
 import { Pill } from "./types";
 
 export default function App() {
@@ -28,6 +28,8 @@ export default function App() {
   const [writerMode, setWriterMode] = useState<"mock" | "llm">("mock");
   const [collectorMode, setCollectorMode] = useState<"mock" | "web">("mock");
   const [analystMode, setAnalystMode] = useState<"mock" | "evidence" | "llm">("evidence");
+  const [workflowEngine, setWorkflowEngine] = useState<"custom" | "langgraph">("custom");
+  const [workflowSummary, setWorkflowSummary] = useState<WorkflowSummary>();
   const [llmStatus, setLlmStatus] = useState<LlmStatus>();
   const [collectorStatus, setCollectorStatus] = useState<CollectorStatus>();
   const [llmTesting, setLlmTesting] = useState(false);
@@ -84,6 +86,7 @@ export default function App() {
     setTraces([]);
     setSelectedClaim(undefined);
     setSelectedEvidenceIds([]);
+    setWorkflowSummary(undefined);
     await refresh(nextTask.task_id);
   }
 
@@ -95,7 +98,8 @@ export default function App() {
     if (!task) return;
     setBusy(true);
     try {
-      const result = await api.runTask(task.task_id, demoMode, autoRework, writerMode, collectorMode, analystMode) as { report?: Report | null };
+      const result = await api.runTask(task.task_id, demoMode, autoRework, writerMode, collectorMode, analystMode, workflowEngine) as { report?: Report | null; workflow_summary?: WorkflowSummary };
+      setWorkflowSummary(result.workflow_summary);
       await loadTasks(task.task_id);
       if (!result.report) {
         setReport(undefined);
@@ -235,6 +239,14 @@ export default function App() {
             <option value="evidence">Evidence-based Analyst</option>
             <option value="llm">LLM Analyst</option>
           </select>
+          <select
+            className="rounded border border-line bg-white px-3 py-2 text-sm"
+            value={workflowEngine}
+            onChange={(event) => setWorkflowEngine(event.target.value as "custom" | "langgraph")}
+          >
+            <option value="custom">Custom Runner</option>
+            <option value="langgraph">LangGraph Runner</option>
+          </select>
           <span className="rounded border border-line bg-white px-3 py-2 text-sm">
             LLM：{llmStatusLabel}
           </span>
@@ -271,7 +283,7 @@ export default function App() {
           <span className="text-sm text-slate-600">执行所选 Mock Agent DAG，并生成 DAG、报告、证据、QA 和 Trace。</span>
         </div>
 
-        {(llmStatus || collectorStatus || writerDiagnosticMessage || collectorDiagnosticMessage) && (
+        {(llmStatus || collectorStatus || writerDiagnosticMessage || collectorDiagnosticMessage || workflowSummary) && (
           <div className="mb-4 rounded border border-line bg-white p-3 text-sm">
             <div className="flex flex-wrap gap-x-5 gap-y-2">
               <span>LLM Provider：{llmStatus?.llm_provider ?? "未读取"}</span>
@@ -296,6 +308,22 @@ export default function App() {
                 <span>used：{writerDiagnostics.writer_mode_used ?? "-"}</span>
                 <span>fallback：{writerDiagnostics.fallback_used ? "true" : "false"}</span>
                 <span>llm_call：{writerDiagnostics.llm_call_attempted ? (writerDiagnostics.llm_call_success ? "success" : "failed") : "not_attempted"}</span>
+              </div>
+            )}
+            {workflowSummary && (
+              <div className="mt-2 rounded border border-line bg-panel px-3 py-2">
+                <div className="flex flex-wrap gap-x-5 gap-y-1">
+                  <span>Workflow Engine: {workflowSummary.workflow_engine_used ?? "-"}</span>
+                  <span>requested: {workflowSummary.workflow_engine_requested ?? "-"}</span>
+                  <span>rework_count: {workflowSummary.rework_count ?? 0}</span>
+                  <span>final_status: {workflowSummary.final_status ?? "-"}</span>
+                  {workflowSummary.workflow_engine_used === "langgraph" && <span className="font-semibold text-accent">LangGraph Runner</span>}
+                </div>
+                {!!workflowSummary.conditional_routes_taken?.length && (
+                  <div className="mt-1 text-xs text-slate-600">
+                    routes: {workflowSummary.conditional_routes_taken.map((item) => `${item.from_node ?? "qa"} -> ${item.to_node ?? "-"} (${item.reason ?? "qa"})`).join(" | ")}
+                  </div>
+                )}
               </div>
             )}
             {writerDiagnosticMessage && (

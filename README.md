@@ -261,3 +261,53 @@ chcp 65001
 - 隐私和敏感信息保护要求
 - 访谈、问卷等内容的脱敏要求
 - 最终报告中避免复制长篇受版权保护文本
+
+## Phase 8: LangGraph Workflow Engine
+
+当前系统支持两种 workflow engine：
+
+```text
+POST /api/tasks/{task_id}/run?workflow_engine=custom
+POST /api/tasks/{task_id}/run?workflow_engine=langgraph
+```
+
+也可以通过环境变量设置默认值：
+
+```bash
+WORKFLOW_ENGINE=custom
+WORKFLOW_ENGINE=langgraph
+```
+
+优先级为：
+
+```text
+API query 参数 > WORKFLOW_ENGINE 环境变量 > 默认 custom
+```
+
+### 维护边界
+
+- `Custom Runner` 是 legacy stable fallback，只维护当前稳定主链路。
+- `LangGraph Runner` 是后续扩展主线，用 `StateGraph` 显式表达 DAG、QA conditional routing 和 auto_rework 循环。
+- 后续新增节点，例如 PageFetcher、Chunker、Indexer、Retriever、SWOTAgent、QuestionnaireAgent，只接入 LangGraph Runner。
+- Agent 业务逻辑只有一份，仍然在各 Agent 的 `run()` 方法中。
+- LangGraph node 只负责从 `WorkflowState` 取数据、构造现有 Input Schema、调用 Agent.run()、把 Output 写回 State，不复制 Agent 业务逻辑。
+
+### LangGraph 路由
+
+当前 LangGraph 主链路：
+
+```text
+planner -> collector -> analyst -> report_writer -> qa -> final_report
+```
+
+QA 后使用 conditional routing：
+
+```text
+qa passed -> final_report
+route_to = CollectorAgent -> collector
+route_to = AnalystAgent -> analyst
+route_to = ReportWriterAgent -> report_writer
+manual_review / unknown route -> final_report
+```
+
+每次运行会额外生成 `WorkflowEngine` Trace，记录 workflow engine、node_sequence、conditional_routes_taken、rework_count、final_status 和 elapsed_time_ms。

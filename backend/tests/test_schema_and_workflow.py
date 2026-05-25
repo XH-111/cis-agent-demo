@@ -10,10 +10,12 @@ from app import db_models  # noqa: F401
 from app.agents.analyst import AnalystAgent
 from app.agents.collector import CollectorAgent
 from app.agents.final_report import FinalReportAgent
+from app.agents.langgraph_runner import LangGraphWorkflowRunner
 from app.agents.planner import PlannerAgent
 from app.agents.qa import QaAgent
 from app.agents.report_writer import ReportWriterAgent
 from app.agents.runner import MockWorkflowRunner
+from app.agents.runner_factory import resolve_workflow_engine
 from app.database import Base
 from app.schemas import (
     AgentMessage,
@@ -871,3 +873,102 @@ def test_auto_rework_respects_manual_review_limit(db_session):
     result = qa.run(QaInput(task=task, evidence=[], demo_mode="qa_missing_evidence")).qa_result
     assert result.status == "manual_review"
     assert result.route_to is None
+
+
+def test_workflow_engine_resolve_priority(monkeypatch):
+    monkeypatch.delenv("WORKFLOW_ENGINE", raising=False)
+    assert resolve_workflow_engine(None) == "custom"
+    monkeypatch.setenv("WORKFLOW_ENGINE", "langgraph")
+    assert resolve_workflow_engine(None) == "langgraph"
+    assert resolve_workflow_engine("custom") == "custom"
+    assert resolve_workflow_engine("langgraph") == "langgraph"
+
+
+def test_langgraph_normal_workflow_passes_and_finalizes(db_session):
+    task = make_task(db_session)
+    result = LangGraphWorkflowRunner(db_session).run(task.task_id, workflow_engine_requested="langgraph")
+    assert result["qa_result"].status == "passed"
+    assert result["report"] is not None
+    summary = result["workflow_summary"]
+    assert summary["workflow_engine_used"] == "langgraph"
+    assert summary["node_sequence"][-1] == "final_report"
+    traces = TraceService(db_session).list_for_task(task.task_id)
+    assert {trace.agent_name for trace in traces} >= {"PlannerAgent", "CollectorAgent", "AnalystAgent", "ReportWriterAgent", "QaAgent", "FinalReport", "WorkflowEngine"}
+
+
+@pytest.mark.parametrize(
+    ("demo_mode", "expected_node"),
+    [
+        ("qa_missing_evidence", "collector"),
+        ("qa_invalid_extraction", "analyst"),
+        ("qa_bad_report", "report_writer"),
+    ],
+)
+def test_langgraph_auto_rework_conditional_routes(db_session, demo_mode, expected_node):
+    task = make_task(db_session)
+    result = LangGraphWorkflowRunner(db_session).run(task.task_id, demo_mode=demo_mode, auto_rework=True)
+    assert result["qa_result"].status == "passed"
+    routes = result["workflow_summary"]["conditional_routes_taken"]
+    assert routes
+    assert routes[0]["to_node"] == expected_node
+    assert result["workflow_summary"]["rework_count"] == 1
+
+
+def test_langgraph_without_auto_rework_stops_on_qa_failure(db_session):
+    task = make_task(db_session)
+    result = LangGraphWorkflowRunner(db_session).run(task.task_id, demo_mode="qa_bad_report", auto_rework=False)
+    assert result["qa_result"].status == "failed"
+    assert result["report"] is None
+    assert result["workflow_summary"]["conditional_routes_taken"] == []
+    assert result["workflow_summary"]["final_status"] == "qa_failed"
+
+
+def test_langgraph_max_rework_enters_manual_review_without_loop(db_session):
+    task = make_task(db_session)
+    TaskService(db_session).update_status(task.task_id, "running", rework_count=3)
+    task = TaskService(db_session).get_task(task.task_id)
+    runner = LangGraphWorkflowRunner(db_session)
+    state = {
+        "task_id": task.task_id,
+        "task": task,
+        "workflow_engine_requested": "langgraph",
+        "workflow_engine_used": "langgraph",
+        "demo_mode": "qa_missing_evidence",
+        "collector_mode": "mock",
+        "analyst_mode": "evidence",
+        "writer_mode": "mock",
+        "content_mode": None,
+        "auto_rework": True,
+        "rework_count": 3,
+        "max_rework": 3,
+        "evidence": [],
+        "report": None,
+        "qa_result": None,
+        "route_to": None,
+        "final_status": None,
+        "errors": [],
+        "node_sequence": [],
+        "conditional_routes_taken": [],
+        "workflow_summary": {},
+    }
+    output = runner.qa_node(state)
+    assert output["qa_result"].status == "manual_review"
+    assert runner.route_after_qa(output) == "final_report"
+
+
+def test_langgraph_modes_and_competitor_coverage_still_work(db_session, monkeypatch):
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    task = make_task(db_session)
+    result = LangGraphWorkflowRunner(db_session).run(
+        task.task_id,
+        collector_mode="mock",
+        analyst_mode="evidence",
+        writer_mode="llm",
+        workflow_engine_requested="langgraph",
+    )
+    assert result["qa_result"].status == "passed"
+    assert result["report"] is not None
+    assert {claim.competitor for claim in result["report"].claims} == set(task.competitors)
+    writer_trace = next(trace for trace in TraceService(db_session).list_for_task(task.task_id) if trace.agent_name == "ReportWriterAgent")
+    writer_diagnostics = json.loads(writer_trace.output_summary)
+    assert writer_diagnostics["writer_mode_requested"] == "llm"

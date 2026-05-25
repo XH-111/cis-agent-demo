@@ -112,3 +112,38 @@ flowchart TD
 3. 如果勾选 `auto_rework=true`，系统会自动执行返工 Agent，然后重新进入 QA。
 4. 最大返工次数为 `max_rework=3`，超过后进入 `manual_review`，避免无限循环。
 5. Evidence 质量问题属于 soft suggestion，例如低可信证据不会 hard fail，但会提示补充官方或高质量来源。
+
+## 4. LangGraph Workflow Engine
+
+```mermaid
+flowchart TD
+    API[FastAPI /run] --> Factory[RunnerFactory]
+    Factory -->|workflow_engine=custom| Custom[Custom Runner<br/>legacy stable fallback]
+    Factory -->|workflow_engine=langgraph| LG[LangGraphWorkflowRunner<br/>StateGraph]
+
+    LG --> State[WorkflowState]
+    State --> PlannerNode[planner_node]
+    PlannerNode --> CollectorNode[collector_node]
+    CollectorNode --> AnalystNode[analyst_node]
+    AnalystNode --> WriterNode[report_writer_node]
+    WriterNode --> QANode[qa_node]
+    QANode -->|passed| FinalNode[final_report_node]
+    QANode -->|route_to CollectorAgent| CollectorNode
+    QANode -->|route_to AnalystAgent| AnalystNode
+    QANode -->|route_to ReportWriterAgent| WriterNode
+    QANode -->|manual_review / unknown| FinalNode
+
+    PlannerNode -. calls .-> PlannerRun[PlannerAgent.run]
+    CollectorNode -. calls .-> CollectorRun[CollectorAgent.run]
+    AnalystNode -. calls .-> AnalystRun[AnalystAgent.run]
+    WriterNode -. calls .-> WriterRun[ReportWriterAgent.run]
+    QANode -. calls .-> QARun[QaAgent.run]
+    FinalNode -. calls .-> FinalRun[FinalReportAgent.run]
+```
+
+说明：
+1. LangGraph 只接入编排层，节点函数不复制 Agent 业务逻辑，只包装现有 `Agent.run()`。
+2. `WorkflowState` 保存 task、各 Agent 输出、Evidence、Report、QA 结果、返工次数、节点序列和条件路由记录。
+3. `Custom Runner` 保留为 legacy fallback，只维护当前稳定主链路；后续 RAG、Retriever、SWOT 等新节点只接入 LangGraph。
+4. QA 后通过 conditional edge 回到 Collector、Analyst 或 ReportWriter，保证返工后续路径完整。
+5. 每次 LangGraph 运行额外写入 `WorkflowEngine` Trace，用于展示 workflow_engine、node_sequence 和 conditional_routes_taken。

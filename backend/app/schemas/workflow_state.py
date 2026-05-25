@@ -1,0 +1,52 @@
+from typing import Any, Literal, TypedDict
+
+from app.schemas.agent_io import (
+    AnalystOutput,
+    CollectorOutput,
+    FinalReportOutput,
+    PlannerOutput,
+    QaOutput,
+    ReportWriterOutput,
+)
+from app.schemas.models import Evidence, QaResult, Report, Task
+
+
+WorkflowEngine = Literal["custom", "langgraph"]
+
+
+class ConditionalRoute(TypedDict, total=False):
+    from_node: str
+    to_node: str
+    reason: str
+    rework_count: int
+
+
+class WorkflowState(TypedDict, total=False):
+    task_id: str
+    trace_id: str | None
+    task: Task
+    workflow_engine_requested: str
+    workflow_engine_used: str
+    demo_mode: str
+    collector_mode: str
+    analyst_mode: str
+    writer_mode: str
+    content_mode: str | None
+    auto_rework: bool
+    rework_count: int
+    max_rework: int
+    planner_output: PlannerOutput | None
+    collector_output: CollectorOutput | None
+    analyst_output: AnalystOutput | None
+    report_writer_output: ReportWriterOutput | None
+    qa_output: QaOutput | None
+    final_report_output: FinalReportOutput | None
+    evidence: list[Evidence]
+    report: Report | None
+    qa_result: QaResult | None
+    route_to: str | None
+    final_status: str | None
+    errors: list[str]
+    node_sequence: list[str]
+    conditional_routes_taken: list[ConditionalRoute]
+    workflow_summary: dict[str, Any]

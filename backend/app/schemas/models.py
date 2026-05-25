@@ -14,6 +14,7 @@ AgentName = Literal[
     "QaAgent",
     "FinalReport",
     "FinalReportAgent",
+    "WorkflowEngine",
 ]
 
 
