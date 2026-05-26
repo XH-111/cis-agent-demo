@@ -342,7 +342,45 @@
 
 > LLM 是增强能力，不是系统稳定性的单点依赖。LLM 输出不合法时不会静默通过，要么 fallback，要么进入 QA failed。这保证了报告质量和可追溯性。
 
-## 八、每一步页面点哪里
+## 八、随机竞品保护演示
+
+### 页面点击顺序
+
+1. 在“创建分析任务”中手动输入：
+   - 任务名称：随机竞品相关性测试
+   - 竞品名称：`jskad, sda, dsja`
+   - 分析区域：全球
+   - 行业或产品类型：Beauty Retail
+2. 点击“创建任务”。
+3. 运行区选择：
+   - `LangGraph Runner`
+   - `Web Collector`
+   - `Evidence-based Analyst`
+   - `Mock ReportWriter` 或 `LLM ReportWriter`
+4. 点击“运行 Demo 工作流”。
+5. 查看 Evidence Panel、QA Panel 和 Trace Viewer。
+
+### 讲解要点
+
+> 这个演示用于证明系统不会把任意搜索结果当作竞品证据。随机竞品名可能会触发搜索 API 返回无关网页，但 Collector 会计算 relevance_score，检查竞品名或别名是否出现在 title、snippet、url、domain 中。无关 Evidence 会被过滤或降级。QA 会提示缺少与竞品明确相关的公开证据，因此系统不会生成强结论。
+
+### 预期页面现象
+
+- Evidence Panel 中相关 Evidence 数量为 0，或 relevance_level 显示为 low / unrelated。
+- 竞品覆盖区域显示 Relevant Evidence 不足。
+- QA Panel 出现 missing evidence 或 missing relevant evidence。
+- Trace Viewer 的 CollectorAgent output_summary 中可以看到：
+  - `raw_search_result_count_by_competitor`
+  - `relevant_evidence_count_by_competitor`
+  - `unrelated_evidence_count_by_competitor`
+  - `filtered_unrelated_count`
+  - `missing_relevant_evidence_competitors`
+
+讲解话术：
+
+> 过去系统只检查 evidence_ids 是否存在，因此随机竞品也可能被无关网页“支撑”。现在 evidence_ids 只是绑定关系，不能自动代表事实可信。系统增加了实体相关性校验，只有明确命中 competitor 或 alias 的 Evidence 才能支撑强结论。
+
+## 九、每一步页面点哪里
 
 ### 创建任务
 
@@ -426,7 +464,7 @@
 - 用 Agent 下拉框筛选 Agent。
 - 点击某条 Trace 展开详情。
 
-## 九、评委可能追问的问题与回答要点
+## 十、评委可能追问的问题与回答要点
 
 ### Q1：这是不是只是 prompt 包装？
 

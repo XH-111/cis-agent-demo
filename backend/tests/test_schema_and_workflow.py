@@ -42,6 +42,7 @@ from app.services.llm_client import LlmResponse
 from app.services.report_service import ReportService
 from app.services.task_service import TaskService
 from app.services.trace_service import TraceService
+from app.services.evidence_relevance_service import apply_relevance, score_evidence_relevance
 from app.services.web_search_client import SearchResult, WebSearchClient, WebSearchResponse
 
 
@@ -63,6 +64,17 @@ def make_task(db_session):
             competitors=["AlphaCI", "BetaIntel"],
             region="China",
             industry="B2B SaaS",
+        )
+    )
+
+
+def make_custom_task(db_session, product_name="Random Demo", competitors=None, industry="Beauty Retail"):
+    return TaskService(db_session).create_task(
+        CreateTaskRequest(
+            product_name=product_name,
+            competitors=competitors or ["jskad", "sda", "dsja"],
+            region="Global",
+            industry=industry,
         )
     )
 
@@ -326,14 +338,15 @@ class FakeWebSearchClient:
                 error_type="TimeoutError",
                 error_message="timeout",
             )
+        competitor = query.split()[0]
         return WebSearchResponse(
             available=True,
             attempted=True,
             success=True,
             elapsed_time_ms=12,
             results=[
-                SearchResult(title="Official pricing", url="https://official.example.com/pricing", snippet="Official pricing and features summary."),
-                SearchResult(title="Docs", url="https://docs.example.com/features", snippet="Documentation describes collaboration features."),
+                SearchResult(title=f"{competitor} official pricing", url=f"https://{competitor.lower()}.example.com/pricing", snippet=f"{competitor} official pricing and features summary."),
+                SearchResult(title=f"{competitor} docs", url=f"https://docs.{competitor.lower()}.example.com/features", snippet=f"{competitor} documentation describes collaboration features."),
             ],
         )
 
@@ -419,9 +432,9 @@ def test_tavily_results_convert_to_evidence(db_session, monkeypatch):
             {
                 "results": [
                     {
-                        "title": "Feishu official pricing",
-                        "url": "https://www.feishu.cn/pricing",
-                        "content": "飞书官网定价和功能页面摘要，介绍企业协作功能。",
+                            "title": "AlphaCI official pricing",
+                            "url": "https://www.alphaci.example/pricing",
+                            "content": "AlphaCI official pricing and feature summary for enterprise collaboration.",
                         "score": 0.92,
                     }
                 ]
@@ -436,8 +449,8 @@ def test_tavily_results_convert_to_evidence(db_session, monkeypatch):
     )
     assert output.diagnostics["collector_mode_used"] == "web"
     assert output.evidence[0].source_type == "public_web"
-    assert output.evidence[0].url == "https://www.feishu.cn/pricing"
-    assert output.evidence[0].source_domain == "feishu.cn"
+    assert output.evidence[0].url == "https://www.alphaci.example/pricing"
+    assert output.evidence[0].source_domain == "alphaci.example"
     assert output.evidence[0].source_quality == "official"
     assert output.evidence[0].confidence >= 0.85
 
@@ -458,7 +471,7 @@ def test_tavily_empty_results_fallback_to_mock(db_session, monkeypatch):
     )
     assert output.diagnostics["collector_mode_used"] == "mock"
     assert output.diagnostics["fallback_used"] is True
-    assert "no usable" in output.diagnostics["fallback_reason"]
+    assert "no public results" in output.diagnostics["fallback_reason"]
 
 
 def test_tavily_401_fallback_to_mock_and_records_reason(db_session, monkeypatch):
@@ -499,7 +512,7 @@ def test_collector_web_results_convert_to_evidence(db_session):
     )
     assert output.evidence
     assert output.evidence[0].source_type == "public_web"
-    assert output.evidence[0].url == "https://official.example.com/pricing"
+    assert output.evidence[0].url == "https://alphaci.example.com/pricing"
     assert output.evidence[0].confidence == 0.9
     assert output.diagnostics["collector_mode_used"] == "web"
     assert output.diagnostics["web_search_success"] is True
@@ -521,8 +534,8 @@ def test_collector_deduplicates_normalized_urls(db_session):
                 success=True,
                 elapsed_time_ms=1,
                 results=[
-                    SearchResult(title="A", url="https://www.feishu.cn/pricing/?utm_source=x&fbclid=y", snippet="Feishu pricing product features official page."),
-                    SearchResult(title="A copy", url="https://www.feishu.cn/pricing", snippet="Feishu pricing product features official page duplicated."),
+                    SearchResult(title="AlphaCI pricing", url="https://www.alphaci.example/pricing/?utm_source=x&fbclid=y", snippet="AlphaCI pricing product features official page."),
+                    SearchResult(title="AlphaCI pricing copy", url="https://www.alphaci.example/pricing", snippet="AlphaCI pricing product features official page duplicated."),
                 ],
             )
 
@@ -532,7 +545,7 @@ def test_collector_deduplicates_normalized_urls(db_session):
         CollectorInput(task=task, collector_mode="web")
     )
     assert len(output.evidence) == 1
-    assert output.evidence[0].url == "https://www.feishu.cn/pricing"
+    assert output.evidence[0].url == "https://www.alphaci.example/pricing"
     assert output.diagnostics["raw_evidence_count"] == 2
     assert output.diagnostics["deduplicated_evidence_count"] == 1
     assert output.diagnostics["duplicate_removed_count"] == 1
@@ -691,6 +704,212 @@ def test_source_quality_confidence_rules():
     low_quality = CollectorAgent._source_quality("https://spam.example/click", "x", "short", ["飞书"])
     assert CollectorAgent._confidence_for_result("https://www.feishu.cn/pricing", "Official pricing product features content.", official_quality) > CollectorAgent._confidence_for_result("https://example.net/blog", "General market content with enough words to evaluate quality.", unknown_quality)
     assert CollectorAgent._confidence_for_result("https://spam.example/click", "short", low_quality) < 0.5
+
+
+def test_relevance_score_high_when_competitor_appears_in_title_or_snippet():
+    evidence = Evidence(
+        competitor="Feishu",
+        source_type="public_web",
+        url="https://www.feishu.cn/pricing",
+        source_domain="feishu.cn",
+        source_quality="official",
+        snippet="Feishu pricing and collaboration features for enterprise teams.",
+        confidence=0.9,
+    )
+    result = score_evidence_relevance(evidence, "Feishu", title="Feishu official pricing")
+    assert result.relevance_score >= 0.75
+    assert result.relevance_level == "high"
+    assert result.entity_match_signals["competitor_in_title"] is True
+
+
+def test_relevance_score_low_when_competitor_never_appears():
+    evidence = Evidence(
+        competitor="jskad",
+        source_type="public_web",
+        url="https://www.taxjar.com/pricing",
+        source_domain="taxjar.com",
+        source_quality="official",
+        snippet="TaxJar pricing and tax compliance automation for businesses.",
+        confidence=0.9,
+    )
+    result = score_evidence_relevance(evidence, "jskad", title="TaxJar pricing")
+    assert result.relevance_score < 0.25
+    assert result.relevance_level == "unrelated"
+
+
+def test_known_chinese_competitor_alias_keeps_normal_competitors_relevant():
+    evidence = Evidence(
+        competitor="飞书",
+        source_type="public_web",
+        url="https://www.larksuite.com/pricing",
+        source_domain="larksuite.com",
+        source_quality="official",
+        snippet="Lark pricing and collaboration features for business teams.",
+        confidence=0.9,
+    )
+    result = score_evidence_relevance(evidence, "飞书", title="Lark official pricing")
+    assert result.relevance_level in {"high", "medium"}
+    assert result.entity_match_signals["competitor_alias_matched"] is True
+
+
+def test_collector_filters_unrelated_evidence(db_session):
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+
+    class UnrelatedSearchClient(FakeWebSearchClient):
+        def search(self, query: str, limit: int = 5):
+            return WebSearchResponse(
+                available=True,
+                attempted=True,
+                success=True,
+                elapsed_time_ms=10,
+                results=[
+                    SearchResult(title="TaxJar pricing", url="https://www.taxjar.com/pricing", snippet="TaxJar sales tax pricing and automation."),
+                    SearchResult(title="Random docs", url="https://docs.other.example/product", snippet="Other product documentation."),
+                ],
+            )
+
+    output = CollectorAgent(trace_service, web_search_client=UnrelatedSearchClient()).run(
+        CollectorInput(task=task, collector_mode="web")
+    )
+    assert output.evidence
+    assert all(item.relevance_level == "unrelated" for item in output.evidence)
+    assert output.diagnostics["filtered_unrelated_count"] > 0
+    assert set(output.diagnostics["missing_relevant_evidence_competitors"]) == set(task.competitors)
+
+
+def test_analyst_does_not_use_unrelated_evidence(db_session):
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    unrelated = apply_relevance(
+        Evidence(
+            competitor="AlphaCI",
+            source_type="public_web",
+            url="https://www.taxjar.com/pricing",
+            source_domain="taxjar.com",
+            source_quality="official",
+            snippet="TaxJar pricing and tax automation.",
+            confidence=0.9,
+        ),
+        "AlphaCI",
+        title="TaxJar pricing",
+    )
+    output = AnalystAgent(trace_service).run(AnalystInput(task=task, evidence=[unrelated], analyst_mode="evidence"))
+    assert output.diagnostics["insufficient_relevant_evidence"] is True
+    assert "Evidence is insufficient" in output.product_profile.positioning
+
+
+def test_qa_detects_unrelated_evidence_used_by_claim(db_session):
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    unrelated = apply_relevance(
+        Evidence(
+            competitor="AlphaCI",
+            source_type="public_web",
+            url="https://www.taxjar.com/pricing",
+            source_domain="taxjar.com",
+            source_quality="official",
+            snippet="TaxJar pricing and tax automation.",
+            confidence=0.9,
+        ),
+        "AlphaCI",
+        title="TaxJar pricing",
+    )
+    # Add one relevant evidence per competitor so the claim-level relevance check is reached.
+    relevant_alpha = apply_relevance(
+        Evidence(
+            competitor="AlphaCI",
+            source_type="public_web",
+            url="https://www.alphaci.example/pricing",
+            source_domain="alphaci.example",
+            source_quality="official",
+            snippet="AlphaCI pricing product features.",
+            confidence=0.9,
+        ),
+        "AlphaCI",
+        title="AlphaCI pricing",
+    )
+    relevant_beta = apply_relevance(
+        Evidence(
+            competitor="BetaIntel",
+            source_type="public_web",
+            url="https://www.betaintel.example/pricing",
+            source_domain="betaintel.example",
+            source_quality="official",
+            snippet="BetaIntel pricing product features.",
+            confidence=0.9,
+        ),
+        "BetaIntel",
+        title="BetaIntel pricing",
+    )
+    claim = Claim(competitor="AlphaCI", text="Unsupported AlphaCI claim", category="feature", evidence_ids=[unrelated.evidence_id], confidence=0.8)
+    report = Report(task_id=task.task_id, markdown="# Report", json_report={"claims": [claim.model_dump(mode="json")]}, claims=[claim])
+    evidence = [unrelated, relevant_alpha, relevant_beta]
+    analysis = AnalystAgent(trace_service).run(AnalystInput(task=task, evidence=evidence, analyst_mode="mock"))
+    result = QaAgent(trace_service).run(
+        QaInput(task=task, evidence=evidence, analysis=analysis, report_output=ReportWriterOutput(report=report))
+    ).qa_result
+    assert result.status == "failed"
+    assert result.route_to == "ReportWriterAgent"
+    assert result.rework_instructions[0].failed_schema == "Claim.evidence_ids.relevance"
+
+
+def test_report_writer_does_not_use_unrelated_evidence_for_competitor_claims(db_session):
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    unrelated = apply_relevance(
+        Evidence(
+            competitor="AlphaCI",
+            source_type="public_web",
+            url="https://www.taxjar.com/pricing",
+            source_domain="taxjar.com",
+            source_quality="official",
+            snippet="TaxJar pricing and tax automation.",
+            confidence=0.9,
+        ),
+        "AlphaCI",
+        title="TaxJar pricing",
+    )
+    analysis = AnalystAgent(trace_service).run(AnalystInput(task=task, evidence=[unrelated], analyst_mode="mock"))
+    output = ReportWriterAgent(trace_service).run(ReportWriterInput(task=task, knowledge=analysis, evidence=[unrelated]))
+    assert output.report is not None
+    assert all(unrelated.evidence_id not in claim.evidence_ids for claim in output.report.claims)
+
+
+def test_random_competitors_do_not_generate_strong_conclusions(db_session):
+    task = make_custom_task(db_session)
+    trace_service = TraceService(db_session)
+
+    class RandomUnrelatedSearchClient(FakeWebSearchClient):
+        def search(self, query: str, limit: int = 5):
+            return WebSearchResponse(
+                available=True,
+                attempted=True,
+                success=True,
+                elapsed_time_ms=10,
+                results=[
+                    SearchResult(title="TaxJar pricing", url="https://www.taxjar.com/pricing", snippet="TaxJar sales tax pricing and automation for small businesses."),
+                    SearchResult(title="Beauty retail guide", url="https://media.example.com/beauty", snippet="General beauty retail market overview."),
+                ],
+            )
+
+    collected = CollectorAgent(trace_service, web_search_client=RandomUnrelatedSearchClient()).run(
+        CollectorInput(task=task, collector_mode="web")
+    )
+    assert collected.evidence
+    assert all(item.relevance_level == "unrelated" for item in collected.evidence)
+    assert set(collected.diagnostics["missing_relevant_evidence_competitors"]) == {"jskad", "sda", "dsja"}
+
+    analysis = AnalystAgent(trace_service).run(AnalystInput(task=task, evidence=collected.evidence, analyst_mode="evidence"))
+    assert "Evidence is insufficient" in analysis.product_profile.positioning
+
+    report_output = ReportWriterAgent(trace_service).run(ReportWriterInput(task=task, knowledge=analysis, evidence=collected.evidence))
+    qa_result = QaAgent(trace_service).run(
+        QaInput(task=task, evidence=collected.evidence, analysis=analysis, report_output=report_output)
+    ).qa_result
+    assert qa_result.status == "failed"
+    assert qa_result.route_to == "CollectorAgent"
+    assert qa_result.rework_instructions[0].error_type == "missing_relevant_evidence"
 
 
 def test_low_confidence_claim_generates_soft_suggestion(db_session):

@@ -4,6 +4,7 @@ from pydantic import ValidationError
 
 from app.agents.base import AgentExecutionError, AgentOutputValidationError, run_with_trace
 from app.schemas import Claim, QaResult, Report, ReportWriterInput, ReportWriterOutput
+from app.services.evidence_relevance_service import is_relevant_evidence
 from app.services.llm_client import LlmClient, parse_llm_json
 from app.services.trace_service import TraceService
 
@@ -317,9 +318,9 @@ class ReportWriterAgent:
     def _evidence_ids_by_competitor(input_data: ReportWriterInput) -> dict[str, list[str]]:
         grouped = {competitor: [] for competitor in input_data.task.competitors}
         for item in input_data.evidence:
-            if item.competitor in grouped:
+            if item.competitor in grouped and is_relevant_evidence(item):
                 grouped[item.competitor].append(item.evidence_id)
-        if not any(grouped.values()):
+        if not any(grouped.values()) and not input_data.evidence:
             competitor_analysis = input_data.knowledge.product_profile.custom_dimensions.get("competitor_analysis", {})
             if isinstance(competitor_analysis, dict):
                 for competitor, details in competitor_analysis.items():
@@ -342,19 +343,19 @@ class ReportWriterAgent:
                 {
                     "claim_id": f"claim_{index:03d}",
                     "competitor": competitor,
-                    "text": f"{competitor} must be evaluated with its own evidence; current signals show product, pricing, and user-fit information.",
+                    "text": f"{competitor} is evaluated only with high/medium relevance evidence; current public evidence supports a cautious competitor-specific conclusion.",
                     "category": "positioning",
                     "evidence_ids": [] if input_data.simulate_missing_evidence and index == 1 else ids[:2],
                     "confidence": 0.82,
                 }
             )
         if not claims:
-            ids = input_data.knowledge.product_profile.evidence_ids
+            ids = ["insufficient_evidence"] if input_data.evidence else input_data.knowledge.product_profile.evidence_ids
             claims.append(
                 {
                     "claim_id": "claim_001",
                     "competitor": None,
-                    "text": "Current public evidence is insufficient for competitor-specific claims.",
+                    "text": "当前公开证据不足，暂不做强结论。",
                     "category": "risk",
                     "evidence_ids": [] if input_data.simulate_missing_evidence else ids,
                     "confidence": 0.55,
@@ -383,6 +384,8 @@ class ReportWriterAgent:
         system = (
             "You are ReportWriterAgent. Write only from supplied Evidence and Knowledge. "
             "Do not invent sources. Every key claim must bind evidence_ids. "
+            "Evidence ids are not automatically trustworthy: only use Evidence whose relevance_level is high or medium for concrete claims. "
+            "Do not use unrelated Evidence. Low relevance Evidence may only support cautious risk notes. "
             "You must cover every input competitor. Each competitor needs its own subsection and at least one claim when its own evidence exists. "
             "Never use one competitor's evidence_ids to support another competitor's claim. "
             "If a competitor lacks evidence, write '当前公开证据不足，暂不做强结论。' and do not fabricate. "
@@ -390,6 +393,7 @@ class ReportWriterAgent:
             "For claims[].category, use only one of these exact enum values: "
             "positioning, feature, pricing, persona, risk, recommendation. "
             "Do not output Chinese category names or any other category value. "
+            "If a competitor lacks high or medium relevant evidence, write '当前公开证据不足，暂不做强结论。' and do not fabricate. "
             "If unsure, use recommendation."
         )
         user = (

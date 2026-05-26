@@ -2,6 +2,7 @@ from collections import defaultdict
 
 from app.agents.base import run_with_trace
 from app.schemas import AnalystInput, AnalystOutput, Evidence, FeatureTree, PricingModel, ProductProfile, UserPersona
+from app.services.evidence_relevance_service import is_relevant_evidence
 from app.services.trace_service import TraceService
 
 
@@ -118,8 +119,11 @@ class AnalystAgent:
 
     def _evidence_output(self, input_data: AnalystInput, fallback_reason: str | None) -> AnalystOutput:
         task = input_data.task
-        evidence_by_competitor = self._group_by_competitor(input_data.evidence, task.competitors)
-        ids = self._ids(input_data.evidence)
+        usable_evidence = [item for item in input_data.evidence if item.relevance_level in {"high", "medium"}]
+        weak_evidence = [item for item in input_data.evidence if item.relevance_level == "low"]
+        evidence_by_competitor = self._group_by_competitor(usable_evidence, task.competitors)
+        all_evidence_by_competitor = self._group_by_competitor(input_data.evidence, task.competitors)
+        ids = self._ids(usable_evidence)
         competitor_analysis: dict[str, dict] = {}
         core_features: dict[str, list[str]] = {}
         aggregate_feature_hits: dict[str, list[Evidence]] = defaultdict(list)
@@ -137,7 +141,7 @@ class AnalystAgent:
             feature_hits = self._feature_hits(competitor_evidence)
             pricing_evidence = self._keyword_evidence(competitor_evidence, PRICING_KEYWORDS)
             persona_hits = self._persona_hits(competitor_evidence)
-            insufficient = len(competitor_evidence) < 2 or (len(feature_hits) + len(pricing_evidence) + len(persona_hits)) < 1
+            insufficient = len(competitor_evidence) < 1 or (len(feature_hits) + len(pricing_evidence) + len(persona_hits)) < 1
 
             feature_names = list(feature_hits.keys()) or ["insufficient evidence"]
             pricing_labels = self._pricing_tiers(pricing_evidence)
@@ -189,6 +193,17 @@ class AnalystAgent:
             evidence_by_competitor=evidence_by_competitor,
             extracted_fields_by_competitor=extracted_fields_by_competitor,
             evidence_used_by_competitor=evidence_used_by_competitor,
+        )
+        diagnostics.update(
+            {
+                "insufficient_relevant_evidence": insufficient,
+                "relevant_evidence_count": len(usable_evidence),
+                "low_relevance_evidence_count": len(weak_evidence),
+                "unrelated_evidence_count": sum(1 for item in input_data.evidence if item.relevance_level == "unrelated"),
+                "all_evidence_count_by_competitor": {
+                    competitor: len(records) for competitor, records in all_evidence_by_competitor.items()
+                },
+            }
         )
         profile = ProductProfile(
             product_name=task.product_name,
@@ -279,7 +294,7 @@ class AnalystAgent:
     @staticmethod
     def _group_by_competitor(evidence: list[Evidence], competitors: list[str]) -> dict[str, list[Evidence]]:
         grouped: dict[str, list[Evidence]] = {competitor: [] for competitor in competitors}
-        if evidence and not any(item.competitor for item in evidence):
+        if evidence and not any(item.competitor for item in evidence) and all(is_relevant_evidence(item) for item in evidence):
             for competitor in competitors:
                 grouped[competitor] = list(evidence)
             return grouped

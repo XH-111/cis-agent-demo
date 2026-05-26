@@ -146,6 +146,22 @@ Workflow 级别也应记录：
 - 超过最大返工次数 -> `manual_review`
 - 打回指令必须包含错误类型、原因、建议动作和目标 Agent。
 
+## Evidence Relevance Policy
+
+Evidence 不只需要存在，还必须与对应 competitor 实体相关。
+
+- `evidence_ids` 只表示报告结论绑定了证据，不代表事实自动可信。
+- Web Evidence 必须记录 `relevance_score`、`relevance_level`、`relevance_reason` 和 `entity_match_signals`。
+- `entity_match_signals` 至少应包含 competitor 是否出现在 title、snippet、url、domain、alias 中，以及 domain similarity。
+- Claim 不能引用 `relevance_level=unrelated` 的 Evidence。
+- 具体功能、定价、定位、用户画像等强结论只能由 `high` 或 `medium` relevance Evidence 支撑。
+- `low` relevance Evidence 只能作为弱提示或 soft suggestion，不应支撑强结论。
+- 随机或不存在的竞品名称不得生成看似正式的强结论；应输出“未找到与该竞品明确相关的公开证据，暂不生成强结论”。
+- CollectorAgent 需要过滤或降级 unrelated Evidence，并在 Trace 中记录 missing relevant evidence 的竞品。
+- AnalystAgent 在 evidence 模式下不得用 unrelated Evidence 抽取结构化知识。
+- ReportWriterAgent 不得因为 Evidence 有 URL 就默认可信。
+- QaAgent 必须检查 Evidence relevance，并在缺少相关证据或 Claim 引用 unrelated Evidence 时打回。
+
 ## Current Workflow Engine Status
 
 当前系统有两个 workflow engine：

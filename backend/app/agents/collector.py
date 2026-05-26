@@ -2,6 +2,7 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from app.agents.base import run_with_trace
 from app.schemas import CollectorInput, CollectorOutput, Evidence
+from app.services.evidence_relevance_service import apply_relevance
 from app.services.trace_service import TraceService
 from app.services.web_search_client import WebSearchClient
 
@@ -15,6 +16,7 @@ QUALITY_CONFIDENCE = {
     "low_quality": 0.4,
 }
 MIN_EVIDENCE_PER_COMPETITOR = 2
+MIN_RELEVANT_EVIDENCE_PER_COMPETITOR = 1
 MAX_EVIDENCE_PER_COMPETITOR = 5
 
 
@@ -69,6 +71,11 @@ class CollectorAgent:
             "competitor_coverage": {},
             "missing_competitors": [],
             "fallback_by_competitor": {},
+            "raw_search_result_count_by_competitor": {},
+            "relevant_evidence_count_by_competitor": {},
+            "unrelated_evidence_count_by_competitor": {},
+            "filtered_unrelated_count": 0,
+            "missing_relevant_evidence_competitors": [],
             "fallback_used": False,
             "fallback_reason": None,
             "elapsed_time_ms": 0,
@@ -84,6 +91,9 @@ class CollectorAgent:
         buckets: dict[str, list[Evidence]] = {competitor: [] for competitor in task.competitors}
         query_count_by_competitor: dict[str, int] = {competitor: 0 for competitor in task.competitors}
         fallback_by_competitor: dict[str, str | None] = {competitor: None for competitor in task.competitors}
+        raw_search_result_count_by_competitor: dict[str, int] = {competitor: 0 for competitor in task.competitors}
+        unrelated_evidence_count_by_competitor: dict[str, int] = {competitor: 0 for competitor in task.competitors}
+        filtered_unrelated_count = 0
 
         for competitor in task.competitors:
             for query in self._queries_for_competitor(competitor, task.industry):
@@ -100,6 +110,7 @@ class CollectorAgent:
 
                 for result in response.results:
                     raw_count += 1
+                    raw_search_result_count_by_competitor[competitor] += 1
                     normalized_url = self.normalize_url(result.url)
                     dedupe_key = (competitor, normalized_url)
                     if dedupe_key in seen_keys:
@@ -107,7 +118,7 @@ class CollectorAgent:
                     seen_keys.add(dedupe_key)
                     quality = self._source_quality(normalized_url, result.title, result.snippet, task.competitors)
                     confidence = self._confidence_for_result(normalized_url, result.snippet, quality, result.score)
-                    buckets[competitor].append(
+                    candidate = apply_relevance(
                         Evidence(
                             competitor=competitor,
                             source_type="public_web",
@@ -116,8 +127,14 @@ class CollectorAgent:
                             source_quality=quality,
                             snippet=self._snippet(result.title, result.snippet),
                             confidence=confidence,
-                        )
+                        ),
+                        competitor,
+                        title=result.title,
                     )
+                    if candidate.relevance_level == "unrelated":
+                        unrelated_evidence_count_by_competitor[competitor] += 1
+                        filtered_unrelated_count += 1
+                    buckets[competitor].append(candidate)
                     if len(buckets[competitor]) >= MAX_EVIDENCE_PER_COMPETITOR:
                         break
                 if fallback_reason or len(buckets[competitor]) >= MIN_EVIDENCE_PER_COMPETITOR:
@@ -129,8 +146,15 @@ class CollectorAgent:
             evidence.extend(buckets[competitor])
 
         evidence_count_by_competitor = {competitor: len(buckets[competitor]) for competitor in task.competitors}
+        relevant_evidence_count_by_competitor = {
+            competitor: sum(1 for item in buckets[competitor] if item.relevance_level in {"high", "medium"})
+            for competitor in task.competitors
+        }
         missing_competitors = [
             competitor for competitor, count in evidence_count_by_competitor.items() if count < MIN_EVIDENCE_PER_COMPETITOR
+        ]
+        missing_relevant = [
+            competitor for competitor, count in relevant_evidence_count_by_competitor.items() if count < MIN_RELEVANT_EVIDENCE_PER_COMPETITOR
         ]
         diagnostics.update(
             {
@@ -147,17 +171,22 @@ class CollectorAgent:
                 "competitor_coverage": evidence_count_by_competitor,
                 "missing_competitors": missing_competitors,
                 "fallback_by_competitor": fallback_by_competitor,
+                "raw_search_result_count_by_competitor": raw_search_result_count_by_competitor,
+                "relevant_evidence_count_by_competitor": relevant_evidence_count_by_competitor,
+                "unrelated_evidence_count_by_competitor": unrelated_evidence_count_by_competitor,
+                "filtered_unrelated_count": filtered_unrelated_count,
+                "missing_relevant_evidence_competitors": missing_relevant,
                 "elapsed_time_ms": total_elapsed,
             }
         )
 
-        if fallback_reason or not evidence:
+        if fallback_reason or raw_count == 0:
             diagnostics.update(
                 {
                     "collector_mode_used": "mock",
                     "web_search_success": False,
                     "fallback_used": True,
-                    "fallback_reason": fallback_reason or "Web search returned no usable public results.",
+                    "fallback_reason": fallback_reason or "Web search returned no public results.",
                 }
             )
             return None
@@ -178,23 +207,31 @@ class CollectorAgent:
         for competitor in task.competitors:
             evidence.extend(
                 [
-                    Evidence(
-                        competitor=competitor,
-                        source_type="web",
-                        url=f"https://example.com/{competitor.lower()}-product",
-                        source_domain="example.com",
-                        source_quality="unknown",
-                        snippet=f"{competitor} public product page mentions {task.industry} features, collaboration workflow, and target users.",
-                        confidence=0.78,
+                    apply_relevance(
+                        Evidence(
+                            competitor=competitor,
+                            source_type="web",
+                            url=f"https://example.com/{competitor.lower()}-product",
+                            source_domain="example.com",
+                            source_quality="unknown",
+                            snippet=f"{competitor} public product page mentions {task.industry} features, collaboration workflow, and target users.",
+                            confidence=0.78,
+                        ),
+                        competitor,
+                        title=f"{competitor} product",
                     ),
-                    Evidence(
-                        competitor=competitor,
-                        source_type="pricing_page",
-                        url=f"https://example.com/{competitor.lower()}-pricing",
-                        source_domain="example.com",
-                        source_quality="official",
-                        snippet=f"{competitor} pricing page mentions paid plans, enterprise options, subscriptions, and product capabilities.",
-                        confidence=0.86,
+                    apply_relevance(
+                        Evidence(
+                            competitor=competitor,
+                            source_type="pricing_page",
+                            url=f"https://example.com/{competitor.lower()}-pricing",
+                            source_domain="example.com",
+                            source_quality="official",
+                            snippet=f"{competitor} pricing page mentions paid plans, enterprise options, subscriptions, and product capabilities.",
+                            confidence=0.86,
+                        ),
+                        competitor,
+                        title=f"{competitor} pricing",
                     ),
                 ]
             )
@@ -212,6 +249,11 @@ class CollectorAgent:
                 "competitor_coverage": evidence_count_by_competitor,
                 "missing_competitors": [],
                 "fallback_by_competitor": {competitor: None for competitor in task.competitors},
+                "raw_search_result_count_by_competitor": evidence_count_by_competitor,
+                "relevant_evidence_count_by_competitor": evidence_count_by_competitor,
+                "unrelated_evidence_count_by_competitor": {competitor: 0 for competitor in task.competitors},
+                "filtered_unrelated_count": 0,
+                "missing_relevant_evidence_competitors": [],
             }
         )
         return CollectorOutput(evidence=evidence, diagnostics=diagnostics)

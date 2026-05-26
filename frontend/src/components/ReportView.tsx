@@ -26,6 +26,8 @@ export function ReportView({
     .map((competitor) => ({
       competitor,
       evidenceCount: evidence.filter((item) => item.competitor === competitor).length,
+      relevantEvidenceCount: evidence.filter((item) => item.competitor === competitor && ["high", "medium"].includes(item.relevance_level ?? "high")).length,
+      unrelatedEvidenceCount: evidence.filter((item) => item.competitor === competitor && item.relevance_level === "unrelated").length,
       claimCount: report.claims.filter((item) => item.competitor === competitor).length,
     }));
 
@@ -53,13 +55,15 @@ export function ReportView({
                 <div
                   key={item.competitor}
                   className={`rounded border px-3 py-2 ${
-                    item.evidenceCount === 0 || item.claimCount === 0
+                    item.relevantEvidenceCount === 0 || item.claimCount === 0
                       ? "border-amber-300 bg-amber-50 text-warning"
                       : "border-green-300 bg-green-50 text-success"
                   }`}
                 >
                   <span className="font-semibold">{item.competitor}</span>
-                  <span className="ml-2">Evidence {item.evidenceCount} 条 / Claim {item.claimCount} 条</span>
+                  <span className="ml-2">
+                    Evidence {item.evidenceCount} / Relevant {item.relevantEvidenceCount} / Unrelated {item.unrelatedEvidenceCount} / Claim {item.claimCount}
+                  </span>
                 </div>
               ))}
             </div>

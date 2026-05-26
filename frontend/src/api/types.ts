@@ -20,6 +20,10 @@ export type Evidence = {
   confidence: number;
   source_domain?: string;
   source_quality?: "official" | "documentation" | "media" | "review" | "unknown" | "low_quality";
+  relevance_score?: number;
+  relevance_level?: "high" | "medium" | "low" | "unrelated";
+  relevance_reason?: string;
+  entity_match_signals?: Record<string, unknown>;
   collected_at: string;
 };
 

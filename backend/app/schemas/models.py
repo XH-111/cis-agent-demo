@@ -48,6 +48,10 @@ class Evidence(BaseModel):
     confidence: float = Field(ge=0, le=1)
     source_domain: str | None = None
     source_quality: Literal["official", "documentation", "media", "review", "unknown", "low_quality"] = "unknown"
+    relevance_score: float = Field(default=1.0, ge=0, le=1)
+    relevance_level: Literal["high", "medium", "low", "unrelated"] = "high"
+    relevance_reason: str = "Mock or legacy evidence is treated as relevant by default."
+    entity_match_signals: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def require_source_reference(self) -> "Evidence":
@@ -109,7 +113,7 @@ class AgentMessage(BaseModel):
 
 class ReworkInstruction(BaseModel):
     target_agent: AgentName
-    error_type: Literal["missing_evidence", "invalid_extraction", "contradiction", "bad_report_format"]
+    error_type: Literal["missing_evidence", "missing_relevant_evidence", "invalid_extraction", "contradiction", "bad_report_format"]
     reason: str
     suggested_action: str
     claim_id: str | None = None

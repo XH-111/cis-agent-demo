@@ -62,6 +62,17 @@ class QaAgent:
             rework_count=rework_count + 1,
         )
 
+    def _missing_relevant_evidence_result(self, input_data: QaInput, missing: list[str]) -> QaResult:
+        return self._result(
+            input_data.task.task_id,
+            input_data.task.rework_count,
+            "CollectorAgent",
+            "missing_relevant_evidence",
+            f"Missing relevant public evidence for competitors: {', '.join(missing)}. 未找到与该竞品明确相关的公开证据，暂不生成强结论。",
+            "Re-run CollectorAgent with precise per-competitor search; do not use unrelated search results as Evidence.",
+            failed_schema="Evidence.relevance",
+        )
+
     def evaluate(self, input_data: QaInput) -> QaResult:
         task = input_data.task
         rework_count = task.rework_count
@@ -80,6 +91,10 @@ class QaAgent:
         evidence_coverage_issue = self._competitor_evidence_coverage_issue(input_data)
         if evidence_coverage_issue is not None:
             return evidence_coverage_issue
+
+        relevance_coverage_issue = self._competitor_relevance_coverage_issue(input_data)
+        if relevance_coverage_issue is not None:
+            return relevance_coverage_issue
 
         if input_data.analysis is None:
             return self._result(
@@ -175,6 +190,10 @@ class QaAgent:
                     failed_claim=claim.text,
                 )
 
+        unrelated_claim_issue = self._unrelated_evidence_claim_issue(input_data)
+        if unrelated_claim_issue is not None:
+            return unrelated_claim_issue
+
         claim_coverage_issue = self._competitor_claim_coverage_issue(input_data)
         if claim_coverage_issue is not None:
             return claim_coverage_issue
@@ -215,6 +234,43 @@ class QaAgent:
             "Re-run CollectorAgent with per-competitor search and ensure every competitor has Evidence.",
             failed_schema="Evidence.competitor",
         )
+
+    def _competitor_relevance_coverage_issue(self, input_data: QaInput) -> QaResult | None:
+        if not any(item.competitor for item in input_data.evidence):
+            return None
+        relevant_count_by_competitor = {
+            competitor: sum(
+                1
+                for item in input_data.evidence
+                if item.competitor == competitor and item.relevance_level in {"high", "medium"}
+            )
+            for competitor in input_data.task.competitors
+        }
+        missing = [competitor for competitor, count in relevant_count_by_competitor.items() if count == 0]
+        if missing:
+            return self._missing_relevant_evidence_result(input_data, missing)
+        return None
+
+    def _unrelated_evidence_claim_issue(self, input_data: QaInput) -> QaResult | None:
+        if input_data.report_output is None or input_data.report_output.report is None:
+            return None
+        evidence_by_id = {item.evidence_id: item for item in input_data.evidence}
+        for claim in input_data.report_output.report.claims:
+            for evidence_id in claim.evidence_ids:
+                evidence = evidence_by_id.get(evidence_id)
+                if evidence and evidence.relevance_level == "unrelated":
+                    return self._result(
+                        input_data.task.task_id,
+                        input_data.task.rework_count,
+                        "ReportWriterAgent",
+                        "bad_report_format",
+                        f"Claim {claim.claim_id} uses unrelated evidence {evidence_id}.",
+                        "Re-run ReportWriterAgent and bind claims only to high/medium relevance Evidence from the same competitor.",
+                        claim_id=claim.claim_id,
+                        failed_claim=claim.text,
+                        failed_schema="Claim.evidence_ids.relevance",
+                    )
+        return None
 
     def _competitor_claim_coverage_issue(self, input_data: QaInput) -> QaResult | None:
         if input_data.report_output is None or input_data.report_output.report is None:
@@ -282,8 +338,18 @@ class QaAgent:
             for competitor in input_data.task.competitors
         }
         missing_evidence_competitors = [competitor for competitor, count in evidence_count_by_competitor.items() if count == 0]
+        missing_relevant_evidence_competitors = [
+            competitor
+            for competitor in input_data.task.competitors
+            if not any(
+                item.competitor == competitor and item.relevance_level in {"high", "medium"}
+                for item in input_data.evidence
+            )
+        ]
         missing_claim_competitors = [competitor for competitor, count in claim_count_by_competitor.items() if count == 0]
         mismatched_evidence_claims = []
+        unrelated_evidence_claims = []
+        low_relevance_claims = []
 
         if len(input_data.evidence) < 3:
             suggestions.append("Web Collector 返回 Evidence 数量少于 3，建议补充更多公开来源。")
@@ -307,6 +373,9 @@ class QaAgent:
                 if related and all(item.confidence < 0.5 for item in related):
                     low_confidence_claim_count += 1
                     suggestions.append("该结论引用的证据可信度较低，建议补充官方或高质量来源。")
+                if related and all(item.relevance_level == "low" for item in related):
+                    low_relevance_claims.append(claim.claim_id)
+                    suggestions.append("该结论引用的证据与竞品实体相关性较弱，建议补充明确命中竞品名称或官网域名的来源。")
                 for evidence_id in claim.evidence_ids:
                     evidence = evidence_by_id.get(evidence_id)
                     if claim.competitor and evidence and evidence.competitor and claim.competitor != evidence.competitor:
@@ -318,18 +387,41 @@ class QaAgent:
                                 "evidence_competitor": evidence.competitor,
                             }
                         )
+                    if evidence and evidence.relevance_level == "unrelated":
+                        unrelated_evidence_claims.append(
+                            {
+                                "claim_id": claim.claim_id,
+                                "evidence_id": evidence_id,
+                                "competitor": claim.competitor,
+                                "relevance_level": evidence.relevance_level,
+                            }
+                        )
 
         diagnostics = {
             "evidence_quality_checked": True,
             "low_confidence_claim_count": low_confidence_claim_count,
             "soft_suggestion_count": len(suggestions),
             "competitor_coverage_checked": True,
+            "relevance_checked": True,
             "missing_evidence_competitors": missing_evidence_competitors,
+            "missing_relevant_evidence_competitors": missing_relevant_evidence_competitors,
             "missing_claim_competitors": missing_claim_competitors,
             "mismatched_evidence_claims": mismatched_evidence_claims,
+            "unrelated_evidence_claims": unrelated_evidence_claims,
+            "low_relevance_claims": low_relevance_claims,
             "competitor_coverage_result": {
                 competitor: {
                     "evidence_count": evidence_count_by_competitor.get(competitor, 0),
+                    "relevant_evidence_count": sum(
+                        1
+                        for item in input_data.evidence
+                        if item.competitor == competitor and item.relevance_level in {"high", "medium"}
+                    ),
+                    "unrelated_evidence_count": sum(
+                        1
+                        for item in input_data.evidence
+                        if item.competitor == competitor and item.relevance_level == "unrelated"
+                    ),
                     "claim_count": claim_count_by_competitor.get(competitor, 0),
                 }
                 for competitor in input_data.task.competitors
