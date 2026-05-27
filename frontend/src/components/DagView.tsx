@@ -5,6 +5,7 @@ import { Pill } from "../types";
 const schemaByAgent: Record<string, { input: string; output: string }> = {
   PlannerAgent: { input: "PlannerInput", output: "PlannerOutput" },
   CollectorAgent: { input: "CollectorInput", output: "CollectorOutput" },
+  EvidenceGate: { input: "EvidenceGateInput", output: "EvidenceGateOutput" },
   AnalystAgent: { input: "AnalystInput", output: "AnalystOutput" },
   ReportWriterAgent: { input: "ReportWriterInput", output: "ReportWriterOutput" },
   QaAgent: { input: "QaInput", output: "QaOutput" },
@@ -12,7 +13,7 @@ const schemaByAgent: Record<string, { input: string; output: string }> = {
   FinalReportAgent: { input: "FinalReportInput", output: "FinalReportOutput" }
 };
 
-const orderedAgents = ["PlannerAgent", "CollectorAgent", "AnalystAgent", "ReportWriterAgent", "QaAgent", "FinalReport"];
+const orderedAgents = ["PlannerAgent", "CollectorAgent", "EvidenceGate", "AnalystAgent", "ReportWriterAgent", "QaAgent", "FinalReport"];
 
 export function DagView({ dag, traces, qaRouteTo }: { dag?: Dag; traces: TraceRecord[]; qaRouteTo?: string }) {
   const nodes = orderedAgents.map((agent) => dag?.nodes.find((node) => node.id === agent) ?? {
@@ -24,7 +25,7 @@ export function DagView({ dag, traces, qaRouteTo }: { dag?: Dag; traces: TraceRe
   return (
     <section className="bg-white p-4">
       <h2 className="mb-4 flex items-center gap-2 text-lg font-semibold"><Activity size={18} /> DAG 执行状态</h2>
-      <div className="grid gap-3 lg:grid-cols-6">
+      <div className="grid gap-3 lg:grid-cols-7">
         {nodes.map((node, index) => {
           const agentTraces = traces.filter((trace) => trace.agent_name === node.id);
           const elapsed = agentTraces.reduce((sum, trace) => sum + trace.elapsed_time_ms, 0);

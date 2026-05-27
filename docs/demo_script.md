@@ -362,19 +362,24 @@
 
 ### 讲解要点
 
-> 这个演示用于证明系统不会把任意搜索结果当作竞品证据。随机竞品名可能会触发搜索 API 返回无关网页，但 Collector 会计算 relevance_score，检查竞品名或别名是否出现在 title、snippet、url、domain 中。无关 Evidence 会被过滤或降级。QA 会提示缺少与竞品明确相关的公开证据，因此系统不会生成强结论。
+> 这个演示用于证明系统不会把任意搜索结果当作竞品证据。随机竞品名可能会触发搜索 API 返回无关网页，但 Collector 会计算 relevance_score，检查竞品名或别名是否出现在 title、snippet、url、domain 中。EvidenceGate 会在 Analyst 和 ReportWriter 之前拦截缺少相关证据的任务，因此系统不会生成强结论。
 
 ### 预期页面现象
 
 - Evidence Panel 中相关 Evidence 数量为 0，或 relevance_level 显示为 low / unrelated。
 - 竞品覆盖区域显示 Relevant Evidence 不足。
 - QA Panel 出现 missing evidence 或 missing relevant evidence。
+- DAG 中 EvidenceGate 显示失败，ReportWriter 不应执行。
 - Trace Viewer 的 CollectorAgent output_summary 中可以看到：
   - `raw_search_result_count_by_competitor`
   - `relevant_evidence_count_by_competitor`
   - `unrelated_evidence_count_by_competitor`
   - `filtered_unrelated_count`
   - `missing_relevant_evidence_competitors`
+- Trace Viewer 的 EvidenceGate output_summary 中可以看到：
+  - `evidence_gate_passed=false`
+  - `suggested_route=CollectorAgent`
+  - `relevant_evidence_count_by_competitor`
 
 讲解话术：
 

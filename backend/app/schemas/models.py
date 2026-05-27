@@ -6,12 +6,14 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 TaskStatus = Literal["created", "running", "qa_failed", "manual_review", "completed", "failed"]
+TaskRunStatus = Literal["running", "completed", "qa_failed", "manual_review", "failed", "insufficient_evidence"]
 AgentName = Literal[
     "PlannerAgent",
     "CollectorAgent",
     "AnalystAgent",
     "ReportWriterAgent",
     "QaAgent",
+    "EvidenceGate",
     "FinalReport",
     "FinalReportAgent",
     "WorkflowEngine",
@@ -37,8 +39,28 @@ class Task(BaseModel):
     updated_at: datetime
 
 
+class TaskRun(BaseModel):
+    run_id: str
+    task_id: str
+    workflow_engine: str
+    collector_mode: str
+    analyst_mode: str
+    writer_mode: str
+    content_mode: str | None = None
+    demo_mode: str
+    auto_rework: bool
+    status: TaskRunStatus
+    final_status: str | None = None
+    started_at: datetime
+    finished_at: datetime | None = None
+    elapsed_time_ms: int | None = None
+    error_message: str | None = None
+    created_at: datetime
+
+
 class Evidence(BaseModel):
     evidence_id: str = Field(default_factory=lambda: f"ev_{uuid4().hex[:10]}")
+    run_id: str | None = None
     competitor: str | None = None
     source_type: Literal["web", "public_web", "document", "pricing_page", "review", "interview", "survey"]
     url: str | None = None
@@ -132,6 +154,7 @@ class ReworkHistoryItem(BaseModel):
 
 class QaResult(BaseModel):
     task_id: str
+    run_id: str | None = None
     status: Literal["passed", "failed", "manual_review"]
     hard_errors: list[str] = Field(default_factory=list)
     soft_suggestions: list[str] = Field(default_factory=list)
@@ -145,6 +168,7 @@ class QaResult(BaseModel):
 class TraceRecord(BaseModel):
     trace_id: str
     task_id: str
+    run_id: str | None = None
     agent_name: AgentName
     input_summary: str
     output_summary: str
@@ -160,6 +184,7 @@ class TraceRecord(BaseModel):
 class Report(BaseModel):
     report_id: str = Field(default_factory=lambda: f"report_{uuid4().hex[:10]}")
     task_id: str
+    run_id: str | None = None
     markdown: str
     json_report: dict[str, Any]
     claims: list[Claim]

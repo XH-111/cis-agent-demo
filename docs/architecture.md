@@ -51,7 +51,9 @@ flowchart LR
 flowchart LR
     Start([创建竞品分析任务]) --> Planner[PlannerAgent<br/>生成任务计划与 DAG]
     Planner --> Collector[CollectorAgent<br/>采集 Mock / Web Evidence]
-    Collector --> Analyst[AnalystAgent<br/>生成结构化竞品知识]
+    Collector --> Gate[EvidenceGate<br/>相关证据前置校验]
+    Gate -->|passed| Analyst[AnalystAgent<br/>生成结构化竞品知识]
+    Gate -->|missing_relevant_evidence| Stop[insufficient_evidence / Collector rework]
     Analyst --> Writer[ReportWriterAgent<br/>生成 Markdown / JSON 报告]
     Writer --> QA[QaAgent<br/>Schema / Evidence / 格式校验]
     QA -->|passed| Final[FinalReportAgent<br/>整合最终报告]
@@ -71,11 +73,11 @@ flowchart LR
 
 说明：
 
-1. 整个竞品分析被拆成 Planner、Collector、Analyst、ReportWriter、QA 和 FinalReport 六个 Agent 步骤。
+1. 整个竞品分析被拆成 Planner、Collector、EvidenceGate、Analyst、ReportWriter、QA 和 FinalReport 步骤。
 2. 每个 Agent 都使用结构化 Input / Output Schema，避免自由文本在 Agent 之间失控传递。
-3. ReportWriter 生成的每个 Claim 必须绑定 `evidence_ids`，从报告结论可以反查来源 Evidence。
-4. 每个 Agent 执行都会写入 Trace，包括输入摘要、输出摘要、Schema 校验结果、耗时和错误信息。
-5. 当前 Runner 是自定义 MockWorkflowRunner，后续可替换为 LangGraph，但保留相同 Schema 契约。
+3. EvidenceGate 位于 Collector 后、Analyst 前，用于拦截缺少 high / medium relevance Evidence 的任务。
+4. ReportWriter 生成的每个 Claim 必须绑定 `evidence_ids`，从报告结论可以反查来源 Evidence。
+5. 每个 Agent 或 workflow-level 节点都会写入 Trace，包括输入摘要、输出摘要、Schema 校验结果、耗时和错误信息。
 
 ## 3. QA 自动返工流程图
 
@@ -124,10 +126,13 @@ flowchart TD
     LG --> State[WorkflowState]
     State --> PlannerNode[planner_node]
     PlannerNode --> CollectorNode[collector_node]
-    CollectorNode --> AnalystNode[analyst_node]
+    CollectorNode --> EvidenceGateNode[evidence_gate_node]
+    EvidenceGateNode -->|passed| AnalystNode[analyst_node]
+    EvidenceGateNode -->|missing_relevant_evidence + auto_rework| CollectorNode
+    EvidenceGateNode -->|insufficient_evidence / max_rework| FinalNode[final_report_node]
     AnalystNode --> WriterNode[report_writer_node]
     WriterNode --> QANode[qa_node]
-    QANode -->|passed| FinalNode[final_report_node]
+    QANode -->|passed| FinalNode
     QANode -->|route_to CollectorAgent| CollectorNode
     QANode -->|route_to AnalystAgent| AnalystNode
     QANode -->|route_to ReportWriterAgent| WriterNode
@@ -147,3 +152,83 @@ flowchart TD
 3. `Custom Runner` 保留为 legacy fallback，只维护当前稳定主链路；后续 RAG、Retriever、SWOT 等新节点只接入 LangGraph。
 4. QA 后通过 conditional edge 回到 Collector、Analyst 或 ReportWriter，保证返工后续路径完整。
 5. 每次 LangGraph 运行额外写入 `WorkflowEngine` Trace，用于展示 workflow_engine、node_sequence 和 conditional_routes_taken。
+
+## 5. Run Isolation 与 EvidenceGate
+
+```mermaid
+flowchart TD
+    RunStart[Start LangGraph Run] --> TaskRun[Create TaskRun / run_id]
+    TaskRun --> Planner[PlannerAgent]
+    Planner --> Collector[CollectorAgent]
+    Collector --> Gate{EvidenceGate<br/>每个 competitor 是否有 high / medium Evidence?}
+    Gate -->|yes| Analyst[AnalystAgent]
+    Gate -->|no + auto_rework| Collector
+    Gate -->|no + no auto_rework| Stop[insufficient_evidence]
+    Gate -->|max_rework reached| Manual[manual_review]
+```
+
+说明：
+1. Phase 10 后每次 workflow run 都会创建 TaskRun，并生成独立 `run_id`。
+2. Evidence、Report、QA 和 Trace 都绑定当前 `run_id`，旧运行数据不会参与当前运行。
+3. EvidenceGate 是 RAG 前的数据质量防线，避免 unrelated Evidence 被索引或被后续 Agent 当成事实依据。
+4. 随机竞品缺少相关公开证据时，系统会停在 `insufficient_evidence` 或打回 Collector，不进入正式报告生成。
+
+## 6. TaskRun / run_id 版本隔离
+
+```mermaid
+erDiagram
+    TASK ||--o{ TASK_RUN : has
+    TASK_RUN ||--o{ EVIDENCE : owns
+    TASK_RUN ||--o{ REPORT : owns
+    TASK_RUN ||--o{ QA_RESULT : owns
+    TASK_RUN ||--o{ TRACE_RECORD : owns
+
+    TASK {
+      string task_id
+      string product_name
+      string competitors
+      string status
+    }
+    TASK_RUN {
+      string run_id
+      string task_id
+      string workflow_engine
+      string collector_mode
+      string analyst_mode
+      string writer_mode
+      string status
+      string final_status
+      datetime started_at
+      datetime finished_at
+    }
+    EVIDENCE {
+      string evidence_id
+      string task_id
+      string run_id
+      string competitor
+      string source_domain
+      float relevance_score
+    }
+    REPORT {
+      string report_id
+      string task_id
+      string run_id
+    }
+    QA_RESULT {
+      string task_id
+      string run_id
+      string status
+    }
+    TRACE_RECORD {
+      string trace_id
+      string task_id
+      string run_id
+      string agent_name
+    }
+```
+
+说明：
+1. `Task` 是用户创建的分析目标，`TaskRun` 是该目标的一次具体 workflow 执行。
+2. 旧接口默认返回 latest run；历史版本通过 `/api/tasks/{task_id}/runs/{run_id}/...` 查询。
+3. 前端 Run History 可以切换不同 run，Evidence、Report、QA、Trace 和 workflow summary 会跟随切换。
+4. Phase 10 的 run_id 隔离替代了 Phase 9.1 的 cleanup 过渡策略，支持报告版本回放和 Trace 回放。

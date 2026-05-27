@@ -61,8 +61,10 @@ def score_evidence_relevance(evidence: Evidence, competitor: str, aliases: list[
     competitor_in_snippet = _contains_alias(snippet_text, aliases)
     competitor_in_url = _contains_alias(url_text, aliases)
     competitor_in_domain = _contains_alias(domain_text, aliases) or _contains_alias(normalized_domain, aliases)
-    competitor_alias_matched = any([competitor_in_title, competitor_in_snippet, competitor_in_url, competitor_in_domain])
+    strong_entity_match = any([competitor_in_title, competitor_in_url, competitor_in_domain])
+    competitor_alias_matched = any([strong_entity_match, competitor_in_snippet])
     domain_similarity_score = _similarity(normalized_competitor, normalized_domain)
+    strong_domain_similarity = domain_similarity_score >= 0.75
 
     score = 0.0
     if competitor_in_title:
@@ -73,14 +75,18 @@ def score_evidence_relevance(evidence: Evidence, competitor: str, aliases: list[
         score += 0.20
     if competitor_in_domain:
         score += 0.20
-    if domain_similarity_score >= 0.75:
+    if strong_domain_similarity:
         score += 0.10
 
     if not competitor_alias_matched:
         score = min(score, 0.35)
+    if competitor_in_snippet and not strong_entity_match and not strong_domain_similarity:
+        score = min(score, 0.35)
     score = round(max(0.0, min(1.0, score)), 2)
 
-    if score >= 0.75:
+    if not strong_entity_match and not strong_domain_similarity:
+        level = "low" if competitor_in_snippet else "unrelated"
+    elif score >= 0.75:
         level = "high"
     elif score >= 0.45:
         level = "medium"
@@ -96,6 +102,7 @@ def score_evidence_relevance(evidence: Evidence, competitor: str, aliases: list[
         "competitor_in_domain": competitor_in_domain,
         "competitor_alias_matched": competitor_alias_matched,
         "domain_similarity_score": round(domain_similarity_score, 2),
+        "strong_entity_match": strong_entity_match,
     }
     reason = _reason(competitor, aliases, signals, level)
     return EvidenceRelevanceResult(

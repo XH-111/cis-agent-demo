@@ -8,7 +8,7 @@ from app.schemas.agent_io import (
     QaOutput,
     ReportWriterOutput,
 )
-from app.schemas.models import Evidence, QaResult, Report, Task
+from app.schemas.models import Evidence, QaResult, Report, Task, TaskRun
 
 
 WorkflowEngine = Literal["custom", "langgraph"]
@@ -23,8 +23,11 @@ class ConditionalRoute(TypedDict, total=False):
 
 class WorkflowState(TypedDict, total=False):
     task_id: str
+    run_id: str
     trace_id: str | None
     task: Task
+    task_run: TaskRun | None
+    run_status: str | None
     workflow_engine_requested: str
     workflow_engine_used: str
     demo_mode: str
@@ -41,6 +44,7 @@ class WorkflowState(TypedDict, total=False):
     report_writer_output: ReportWriterOutput | None
     qa_output: QaOutput | None
     final_report_output: FinalReportOutput | None
+    evidence_gate_output: dict[str, Any]
     evidence: list[Evidence]
     report: Report | None
     qa_result: QaResult | None

@@ -10,8 +10,28 @@ export type Task = {
   updated_at: string;
 };
 
+export type TaskRun = {
+  run_id: string;
+  task_id: string;
+  workflow_engine: string;
+  collector_mode: string;
+  analyst_mode: string;
+  writer_mode: string;
+  content_mode?: string | null;
+  demo_mode: string;
+  auto_rework: boolean;
+  status: string;
+  final_status?: string | null;
+  started_at: string;
+  finished_at?: string | null;
+  elapsed_time_ms?: number | null;
+  error_message?: string | null;
+  created_at: string;
+};
+
 export type Evidence = {
   evidence_id: string;
+  run_id?: string | null;
   competitor?: string;
   source_type: string;
   url?: string;
@@ -39,6 +59,7 @@ export type Claim = {
 export type Report = {
   report_id: string;
   task_id: string;
+  run_id?: string | null;
   markdown: string;
   json_report: {
     knowledge?: Record<string, unknown>;
@@ -98,6 +119,8 @@ export type SearchTestResult = {
 };
 
 export type WorkflowSummary = {
+  run_id?: string;
+  task_id?: string;
   workflow_engine_requested?: string;
   workflow_engine_used?: string;
   node_sequence?: string[];
@@ -106,6 +129,16 @@ export type WorkflowSummary = {
   final_status?: string;
   elapsed_time_ms?: number;
   error_message?: string | null;
+  run_isolation_strategy?: string;
+  run_cleanup_summary?: Record<string, unknown>;
+  evidence_gate_output?: {
+    evidence_gate_passed?: boolean;
+    missing_relevant_evidence_competitors?: string[];
+    relevant_evidence_count_by_competitor?: Record<string, number>;
+    unrelated_evidence_count_by_competitor?: Record<string, number>;
+    suggested_route?: string | null;
+    suggested_action?: string;
+  };
 };
 
 export type CollectorDiagnostics = {
@@ -122,6 +155,7 @@ export type CollectorDiagnostics = {
 
 export type QaResult = {
   task_id: string;
+  run_id?: string | null;
   status: "passed" | "failed" | "manual_review";
   hard_errors: string[];
   soft_suggestions: string[];
@@ -149,6 +183,7 @@ export type QaResult = {
 export type TraceRecord = {
   trace_id: string;
   task_id: string;
+  run_id?: string | null;
   agent_name: string;
   input_summary: string;
   output_summary: string;

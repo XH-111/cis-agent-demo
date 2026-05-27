@@ -232,19 +232,16 @@ Evidence 不只需要存在，还必须与对应 competitor 实体相关。
 
 ## Run Isolation Policy
 
-当前 Phase 9.1 采用 `cleanup` 作为临时 run isolation 策略。
+Phase 10 起采用 `run_id` 作为产品化 run isolation 策略。
 
-- 每次 LangGraph workflow run 开始前，必须清理当前 task 的旧 Evidence、Report 和 QA 结果。
-- Trace 可以保留，用于历史可观测；但旧 Evidence / Report / QA 不得参与本次分析和前端展示。
-- WorkflowEngine Trace 必须记录 `run_isolation_strategy=cleanup` 和清理摘要。
-- `/api/tasks/{task_id}/evidence`、`/api/tasks/{task_id}/report`、`/api/tasks/{task_id}/qa` 应展示最新运行结果。
-
-产品化目标是引入 `run_id`：
-
-- Evidence、Report、QA、Trace、WorkflowSummary 都应绑定 `run_id`。
+- 每次 workflow run 都必须创建 `TaskRun`。
+- Evidence、Report、QA、Trace、WorkflowSummary 都必须绑定 `run_id`。
 - 前端默认展示 latest run。
 - 用户可以查看历史 run、对比报告版本、回放 Trace。
 - 不允许不同 run 的 Evidence / Report / QA 混用。
+- `/api/tasks/{task_id}/evidence`、`/api/tasks/{task_id}/report`、`/api/tasks/{task_id}/qa`、`/api/tasks/{task_id}/traces` 默认返回 latest run。
+- 历史运行必须通过 `/api/tasks/{task_id}/runs/{run_id}/...` 查询。
+- Phase 9.1 的 cleanup 只作为旧过渡策略背景，不再作为 LangGraph 主线隔离方式。
 
 ## EvidenceGate Policy
 
@@ -373,7 +370,7 @@ From Phase 9 onward, new capabilities must be developed on the LangGraph workflo
 
 ### Phase 10: Run ID / Report Versioning
 
-- 用 `run_id` 替代当前 cleanup 策略。
+- 用 `run_id` 替代 Phase 9.1 cleanup 策略。
 - Evidence / Report / QA / Trace / WorkflowSummary 全部按 run 隔离。
 - 支持历史 run 查询、报告版本对比和 Trace 回放。
 
@@ -420,6 +417,7 @@ From Phase 9 onward, new capabilities must be developed on the LangGraph workflo
 - Phase 8: LangGraph Workflow Engine
 - Phase 9: Evidence Relevance Gate
 - Phase 9.1: Run Isolation + EvidenceGate
+- Phase 10: Run ID / Report Versioning
 
 ## Product Requirements
 

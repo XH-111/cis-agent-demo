@@ -8,6 +8,7 @@ from app.schemas import CreateTaskRequest
 from app.services.evidence_service import EvidenceService
 from app.services.llm_client import LlmClient
 from app.services.report_service import ReportService
+from app.services.task_run_service import TaskRunService
 from app.services.task_service import TaskService
 from app.services.trace_service import TraceService
 from app.services.web_search_client import WebSearchClient
@@ -84,6 +85,17 @@ def run_task(
                 workflow_engine_requested=workflow_engine or "env/default",
                 content_mode=content_mode,
             )
+        run_service = TaskRunService(db)
+        task_run = run_service.create_run(
+            task_id=task_id,
+            workflow_engine="custom",
+            collector_mode=collector_mode,
+            analyst_mode=analyst_mode,
+            writer_mode=writer_mode,
+            content_mode=content_mode,
+            demo_mode=demo_mode,
+            auto_rework=auto_rework,
+        )
         result = runner.run(
             task_id,
             demo_mode=demo_mode,
@@ -91,6 +103,7 @@ def run_task(
             writer_mode=writer_mode,
             collector_mode=collector_mode,
             analyst_mode=analyst_mode,
+            run_id=task_run.run_id,
         )
         result["workflow_summary"] = {
             "workflow_engine_requested": workflow_engine or "env/default",
@@ -100,6 +113,17 @@ def run_task(
             "rework_count": result["qa_result"].rework_count if result.get("qa_result") else 0,
             "final_status": result["qa_result"].status if result.get("qa_result") else "failed",
         }
+        final_status = result["workflow_summary"]["final_status"]
+        finished_run = run_service.finish_run(
+            task_run.run_id,
+            status="completed" if final_status in {"passed", "completed"} else str(final_status),
+            final_status=final_status,
+            elapsed_time_ms=None,
+        )
+        result["run"] = finished_run
+        result["run_id"] = finished_run.run_id
+        result["workflow_summary"]["run_id"] = finished_run.run_id
+        result["workflow_summary"]["run_isolation_strategy"] = "legacy_custom_no_run_binding"
         return result
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Task not found") from exc
@@ -116,18 +140,21 @@ def get_dag(task_id: str, db: Session = Depends(get_db)):
 
 @router.get("/tasks/{task_id}/traces")
 def get_traces(task_id: str, db: Session = Depends(get_db)):
-    return TraceService(db).list_for_task(task_id)
+    run_id = _latest_run_id_or_none(task_id, db)
+    return TraceService(db).list_for_task(task_id, run_id=run_id) if run_id else TraceService(db).list_for_task(task_id)
 
 
 @router.get("/tasks/{task_id}/evidence")
 def get_evidence(task_id: str, db: Session = Depends(get_db)):
-    return EvidenceService(db).list_for_task(task_id)
+    run_id = _latest_run_id_or_none(task_id, db)
+    return EvidenceService(db).list_for_task(task_id, run_id=run_id) if run_id else EvidenceService(db).list_for_task(task_id)
 
 
 @router.get("/tasks/{task_id}/qa")
 def get_qa(task_id: str, db: Session = Depends(get_db)):
     try:
-        return ReportService(db).latest_qa(task_id)
+        run_id = _latest_run_id_or_none(task_id, db)
+        return ReportService(db).qa_for_task_run(task_id, run_id) if run_id else ReportService(db).latest_qa(task_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="QA result not found") from exc
 
@@ -135,7 +162,8 @@ def get_qa(task_id: str, db: Session = Depends(get_db)):
 @router.get("/tasks/{task_id}/report")
 def get_task_report(task_id: str, db: Session = Depends(get_db)):
     try:
-        return ReportService(db).get_latest_for_task(task_id)
+        run_id = _latest_run_id_or_none(task_id, db)
+        return ReportService(db).get_for_task_run(task_id, run_id) if run_id else ReportService(db).get_latest_for_task(task_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Report not found") from exc
 
@@ -146,3 +174,57 @@ def get_report(report_id: str, db: Session = Depends(get_db)):
         return ReportService(db).get_report(report_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Report not found") from exc
+
+
+@router.get("/tasks/{task_id}/runs")
+def list_task_runs(task_id: str, db: Session = Depends(get_db)):
+    return TaskRunService(db).list_for_task(task_id)
+
+
+@router.get("/tasks/{task_id}/runs/latest")
+def get_latest_task_run(task_id: str, db: Session = Depends(get_db)):
+    try:
+        return TaskRunService(db).latest_for_task(task_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Task run not found") from exc
+
+
+@router.get("/tasks/{task_id}/runs/{run_id}")
+def get_task_run(task_id: str, run_id: str, db: Session = Depends(get_db)):
+    try:
+        return TaskRunService(db).get_run(task_id, run_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Task run not found") from exc
+
+
+@router.get("/tasks/{task_id}/runs/{run_id}/evidence")
+def get_task_run_evidence(task_id: str, run_id: str, db: Session = Depends(get_db)):
+    return EvidenceService(db).list_for_task(task_id, run_id=run_id)
+
+
+@router.get("/tasks/{task_id}/runs/{run_id}/report")
+def get_task_run_report(task_id: str, run_id: str, db: Session = Depends(get_db)):
+    try:
+        return ReportService(db).get_for_task_run(task_id, run_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Report not found") from exc
+
+
+@router.get("/tasks/{task_id}/runs/{run_id}/qa")
+def get_task_run_qa(task_id: str, run_id: str, db: Session = Depends(get_db)):
+    try:
+        return ReportService(db).qa_for_task_run(task_id, run_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="QA result not found") from exc
+
+
+@router.get("/tasks/{task_id}/runs/{run_id}/traces")
+def get_task_run_traces(task_id: str, run_id: str, db: Session = Depends(get_db)):
+    return TraceService(db).list_for_task(task_id, run_id=run_id)
+
+
+def _latest_run_id_or_none(task_id: str, db: Session) -> str | None:
+    try:
+        return TaskRunService(db).latest_for_task(task_id).run_id
+    except KeyError:
+        return None

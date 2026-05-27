@@ -10,6 +10,7 @@ DemoMode = Literal["normal", "qa_missing_evidence", "qa_invalid_extraction", "qa
 
 class PlannerInput(BaseModel):
     task: Task
+    run_id: str | None = None
     retry_count: int = 0
 
 
@@ -20,8 +21,10 @@ class PlannerOutput(BaseModel):
 
 class CollectorInput(BaseModel):
     task: Task
+    run_id: str | None = None
     retry_count: int = 0
     collector_mode: Literal["mock", "web"] = "mock"
+    gate_context: dict = Field(default_factory=dict)
 
 
 class CollectorOutput(BaseModel):
@@ -31,6 +34,7 @@ class CollectorOutput(BaseModel):
 
 class AnalystInput(BaseModel):
     task: Task
+    run_id: str | None = None
     evidence: list[Evidence]
     retry_count: int = 0
     force_invalid_extraction: bool = False
@@ -47,6 +51,7 @@ class AnalystOutput(BaseModel):
 
 class ReportWriterInput(BaseModel):
     task: Task
+    run_id: str | None = None
     knowledge: AnalystOutput
     evidence: list[Evidence] = Field(default_factory=list)
     retry_count: int = 0
@@ -65,6 +70,7 @@ class ReportWriterOutput(BaseModel):
 
 class QaInput(BaseModel):
     task: Task
+    run_id: str | None = None
     evidence: list[Evidence] = Field(default_factory=list)
     analysis: AnalystOutput | None = None
     report_output: ReportWriterOutput | None = None
@@ -79,6 +85,7 @@ class QaOutput(BaseModel):
 
 class FinalReportInput(BaseModel):
     task: Task
+    run_id: str | None = None
     report: Report
     qa_result: QaResult
     evidence: list[Evidence]

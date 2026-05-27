@@ -1,4 +1,4 @@
-import type { CollectorStatus, Dag, Evidence, LlmStatus, QaResult, Report, SearchTestResult, Task, TraceRecord } from "./types";
+import type { CollectorStatus, Dag, Evidence, LlmStatus, QaResult, Report, SearchTestResult, Task, TaskRun, TraceRecord } from "./types";
 
 const baseUrl = "";
 
@@ -24,6 +24,12 @@ export const api = {
   qa: (taskId: string) => request<QaResult>(`/api/tasks/${taskId}/qa`),
   report: (taskId: string) => request<Report>(`/api/tasks/${taskId}/report`),
   traces: (taskId: string) => request<TraceRecord[]>(`/api/tasks/${taskId}/traces`),
+  runs: (taskId: string) => request<TaskRun[]>(`/api/tasks/${taskId}/runs`),
+  latestRun: (taskId: string) => request<TaskRun>(`/api/tasks/${taskId}/runs/latest`),
+  runEvidence: (taskId: string, runId: string) => request<Evidence[]>(`/api/tasks/${taskId}/runs/${runId}/evidence`),
+  runQa: (taskId: string, runId: string) => request<QaResult>(`/api/tasks/${taskId}/runs/${runId}/qa`),
+  runReport: (taskId: string, runId: string) => request<Report>(`/api/tasks/${taskId}/runs/${runId}/report`),
+  runTraces: (taskId: string, runId: string) => request<TraceRecord[]>(`/api/tasks/${taskId}/runs/${runId}/traces`),
   llmStatus: () => request<LlmStatus>("/api/llm/status"),
   testLlm: () => request<LlmStatus>("/api/llm/test", { method: "POST" }),
   collectorStatus: () => request<CollectorStatus>("/api/search/status"),

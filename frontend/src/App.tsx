@@ -9,7 +9,7 @@ import { ReportView } from "./components/ReportView";
 import { TaskForm } from "./components/TaskForm";
 import { TaskList } from "./components/TaskList";
 import { TraceViewer } from "./components/TraceViewer";
-import type { Claim, CollectorDiagnostics, CollectorStatus, Dag, DemoMode, Evidence, LlmStatus, QaResult, Report, SearchTestResult, Task, TraceRecord, WriterDiagnostics, WorkflowSummary } from "./types";
+import type { Claim, CollectorDiagnostics, CollectorStatus, Dag, DemoMode, Evidence, LlmStatus, QaResult, Report, SearchTestResult, Task, TaskRun, TraceRecord, WriterDiagnostics, WorkflowSummary } from "./types";
 import { Pill } from "./types";
 
 export default function App() {
@@ -20,6 +20,8 @@ export default function App() {
   const [qa, setQa] = useState<QaResult>();
   const [report, setReport] = useState<Report>();
   const [traces, setTraces] = useState<TraceRecord[]>([]);
+  const [runs, setRuns] = useState<TaskRun[]>([]);
+  const [selectedRunId, setSelectedRunId] = useState<string>();
   const [selectedClaim, setSelectedClaim] = useState<Claim>();
   const [selectedEvidenceIds, setSelectedEvidenceIds] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
@@ -60,8 +62,16 @@ export default function App() {
     }
   }
 
-  async function refresh(taskId: string) {
-    const [nextDag, nextEvidence, nextTraces] = await Promise.all([api.dag(taskId), api.evidence(taskId), api.traces(taskId)]);
+  async function refresh(taskId: string, runId?: string) {
+    const nextRuns = await api.runs(taskId).catch(() => []);
+    setRuns(nextRuns);
+    const activeRunId = runId ?? nextRuns[0]?.run_id;
+    setSelectedRunId(activeRunId);
+    const [nextDag, nextEvidence, nextTraces] = await Promise.all([
+      api.dag(taskId),
+      activeRunId ? api.runEvidence(taskId, activeRunId) : api.evidence(taskId),
+      activeRunId ? api.runTraces(taskId, activeRunId) : api.traces(taskId)
+    ]);
     setDag(nextDag);
     setEvidence(nextEvidence);
     setTraces(nextTraces);
@@ -69,8 +79,10 @@ export default function App() {
     if (recoveredSummary) {
       setWorkflowSummary(recoveredSummary);
     }
-    await api.qa(taskId).then(setQa).catch(() => setQa(undefined));
-    await api.report(taskId).then((nextReport) => {
+    const qaRequest = activeRunId ? api.runQa(taskId, activeRunId) : api.qa(taskId);
+    const reportRequest = activeRunId ? api.runReport(taskId, activeRunId) : api.report(taskId);
+    await qaRequest.then(setQa).catch(() => setQa(undefined));
+    await reportRequest.then((nextReport) => {
       setReport(nextReport);
       setSelectedClaim(nextReport.claims[0]);
       setSelectedEvidenceIds([]);
@@ -88,6 +100,8 @@ export default function App() {
     setQa(undefined);
     setReport(undefined);
     setTraces([]);
+    setRuns([]);
+    setSelectedRunId(undefined);
     setSelectedClaim(undefined);
     setSelectedEvidenceIds([]);
     setWorkflowSummary(undefined);
@@ -104,7 +118,11 @@ export default function App() {
     try {
       const result = await api.runTask(task.task_id, demoMode, autoRework, writerMode, collectorMode, analystMode, workflowEngine) as { report?: Report | null; workflow_summary?: WorkflowSummary };
       setWorkflowSummary(result.workflow_summary);
+      const runId = result.workflow_summary?.run_id ?? result.report?.run_id;
       await loadTasks(task.task_id);
+      if (runId) {
+        await refresh(task.task_id, runId);
+      }
       if (!result.report) {
         setReport(undefined);
         setSelectedClaim(undefined);
@@ -205,6 +223,36 @@ export default function App() {
             <span className="text-slate-600">名称：{task.product_name}</span>
             <span className="text-slate-600">竞品：{task.competitors.join("、")}</span>
           </div>
+        )}
+
+        {task && runs.length > 0 && (
+          <section className="mb-4 rounded border border-line bg-white p-3">
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <h2 className="text-base font-semibold">Run History</h2>
+              <span className="text-xs text-slate-500">当前查看：{selectedRunId ?? "latest"}</span>
+            </div>
+            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+              {runs.map((run) => (
+                <button
+                  key={run.run_id}
+                  type="button"
+                  onClick={() => refresh(task.task_id, run.run_id)}
+                  className={`rounded border px-3 py-2 text-left text-xs ${selectedRunId === run.run_id ? "border-accent bg-blue-50" : "border-line bg-panel"}`}
+                >
+                  <div className="font-semibold">{run.run_id.slice(0, 14)}</div>
+                  <div className="mt-1 text-slate-600">{new Date(run.started_at).toLocaleString()}</div>
+                  <div className="mt-1 flex flex-wrap gap-x-2 gap-y-1">
+                    <span>{run.workflow_engine}</span>
+                    <span>{run.collector_mode}</span>
+                    <span>{run.analyst_mode}</span>
+                    <span>{run.writer_mode}</span>
+                  </div>
+                  <div className="mt-1">final_status: {run.final_status ?? run.status}</div>
+                  <div>elapsed: {run.elapsed_time_ms ?? 0}ms</div>
+                </button>
+              ))}
+            </div>
+          </section>
         )}
 
         <div className="mb-4 flex flex-wrap items-center gap-3">
@@ -326,6 +374,15 @@ export default function App() {
                 {!!workflowSummary.conditional_routes_taken?.length && (
                   <div className="mt-1 text-xs text-slate-600">
                     routes: {workflowSummary.conditional_routes_taken.map((item) => `${item.from_node ?? "qa"} -> ${item.to_node ?? "-"} (${item.reason ?? "qa"})`).join(" | ")}
+                  </div>
+                )}
+                {workflowSummary.evidence_gate_output && (
+                  <div className={`mt-2 rounded border px-3 py-2 text-xs ${workflowSummary.evidence_gate_output.evidence_gate_passed ? "border-green-300 bg-green-50 text-success" : "border-amber-300 bg-amber-50 text-warning"}`}>
+                    EvidenceGate: {workflowSummary.evidence_gate_output.evidence_gate_passed ? "通过" : "相关证据不足"}
+                    {!!workflowSummary.evidence_gate_output.missing_relevant_evidence_competitors?.length && (
+                      <span> | missing: {workflowSummary.evidence_gate_output.missing_relevant_evidence_competitors.join(", ")}</span>
+                    )}
+                    {workflowSummary.evidence_gate_output.suggested_route && <span> | route_to: {workflowSummary.evidence_gate_output.suggested_route}</span>}
                   </div>
                 )}
               </div>

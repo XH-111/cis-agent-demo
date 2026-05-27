@@ -105,6 +105,13 @@ npm run build
 - `POST /api/tasks`：创建竞品分析任务
 - `GET /api/tasks`：查询任务列表
 - `GET /api/tasks/{task_id}`：查询任务详情
+- `GET /api/tasks/{task_id}/runs`：查询该任务的历史运行列表
+- `GET /api/tasks/{task_id}/runs/latest`：查询最新一次运行
+- `GET /api/tasks/{task_id}/runs/{run_id}`：查询指定运行
+- `GET /api/tasks/{task_id}/runs/{run_id}/evidence`：查询指定运行的 Evidence
+- `GET /api/tasks/{task_id}/runs/{run_id}/report`：查询指定运行的 Report
+- `GET /api/tasks/{task_id}/runs/{run_id}/qa`：查询指定运行的 QA 结果
+- `GET /api/tasks/{task_id}/runs/{run_id}/traces`：查询指定运行的 Trace
 - `POST /api/tasks/{task_id}/run?demo_mode=normal`：启动正常 Mock 工作流
 - `POST /api/tasks/{task_id}/run?demo_mode=qa_missing_evidence`：演示 QA 打回 CollectorAgent
 - `POST /api/tasks/{task_id}/run?demo_mode=qa_invalid_extraction`：演示 QA 打回 AnalystAgent
@@ -124,8 +131,34 @@ npm run build
 - 创建分析任务，并提供示例任务
 - 选择正常流程或三类 QA 失败 Demo
 - 展示当前任务、任务状态、DAG、竞品知识、报告、证据、QA 和 Trace
+- 展示 Run History，支持切换历史运行并回放对应 Evidence、Report、QA 和 Trace
 - 点击报告 Claim 后查看对应 Evidence
 - Trace Viewer 支持按 Agent 过滤
+
+## Phase 10: TaskRun 与 run_id 隔离
+
+`Task` 表示一个竞品分析任务，例如“企业协作工具竞品分析”。`TaskRun` 表示该任务的一次具体 workflow 执行。
+
+每次调用：
+
+```text
+POST /api/tasks/{task_id}/run
+```
+
+都会创建一个新的 `run_id`。新生成的 Evidence、Report、QA Result、TraceRecord 和 WorkflowEngine summary 都会绑定当前 `run_id`。
+
+旧接口仍然保留：
+
+```text
+GET /api/tasks/{task_id}/evidence
+GET /api/tasks/{task_id}/report
+GET /api/tasks/{task_id}/qa
+GET /api/tasks/{task_id}/traces
+```
+
+它们默认返回 latest run 的结果。需要回放历史版本时，请使用 `/runs/{run_id}/...` 系列接口。
+
+Phase 9.1 的 cleanup 是过渡策略。Phase 10 之后，产品化主线采用 `run_id` 隔离，不删除旧运行数据，支持历史报告版本查看和 Trace 回放。
 
 ## ReportWriter 模式
 

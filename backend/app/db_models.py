@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -20,12 +20,34 @@ class TaskRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
 
+class TaskRunRecord(Base):
+    __tablename__ = "task_runs"
+
+    run_id: Mapped[str] = mapped_column(String, primary_key=True)
+    task_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    workflow_engine: Mapped[str] = mapped_column(String, nullable=False)
+    collector_mode: Mapped[str] = mapped_column(String, nullable=False)
+    analyst_mode: Mapped[str] = mapped_column(String, nullable=False)
+    writer_mode: Mapped[str] = mapped_column(String, nullable=False)
+    content_mode: Mapped[str | None] = mapped_column(String, nullable=True)
+    demo_mode: Mapped[str] = mapped_column(String, nullable=False)
+    auto_rework: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    status: Mapped[str] = mapped_column(String, default="running", nullable=False)
+    final_status: Mapped[str | None] = mapped_column(String, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    elapsed_time_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
 class TraceRecordRow(Base):
     __tablename__ = "traces"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     trace_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
     task_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    run_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
     agent_name: Mapped[str] = mapped_column(String, index=True, nullable=False)
     payload_json: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
@@ -36,6 +58,7 @@ class EvidenceRecordRow(Base):
 
     evidence_id: Mapped[str] = mapped_column(String, primary_key=True)
     task_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    run_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
     payload_json: Mapped[str] = mapped_column(Text, nullable=False)
 
 
@@ -44,6 +67,7 @@ class ReportRecordRow(Base):
 
     report_id: Mapped[str] = mapped_column(String, primary_key=True)
     task_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    run_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
     payload_json: Mapped[str] = mapped_column(Text, nullable=False)
 
 
@@ -52,4 +76,5 @@ class QaRecordRow(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     task_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    run_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
     payload_json: Mapped[str] = mapped_column(Text, nullable=False)

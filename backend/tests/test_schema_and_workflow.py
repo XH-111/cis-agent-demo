@@ -41,8 +41,10 @@ from app.schemas import (
 from app.services.llm_client import LlmResponse
 from app.services.report_service import ReportService
 from app.services.task_service import TaskService
+from app.services.task_run_service import TaskRunService
 from app.services.trace_service import TraceService
 from app.services.evidence_relevance_service import apply_relevance, score_evidence_relevance
+from app.services.evidence_service import EvidenceService
 from app.services.web_search_client import SearchResult, WebSearchClient, WebSearchResponse
 
 
@@ -737,6 +739,32 @@ def test_relevance_score_low_when_competitor_never_appears():
     assert result.relevance_level == "unrelated"
 
 
+def test_snippet_only_random_competitor_match_cannot_be_high_relevance():
+    evidence = Evidence(
+        competitor="djkhaseda",
+        source_type="public_web",
+        url="https://www.openai.com/business/chatgpt-pricing",
+        source_domain="openai.com",
+        source_quality="official",
+        snippet="djkhaseda is mentioned in a generated search snippet about ChatGPT pricing.",
+        confidence=0.9,
+    )
+    result = score_evidence_relevance(evidence, "djkhaseda", title="ChatGPT Enterprise pricing")
+    assert result.relevance_level == "low"
+    assert result.relevance_score <= 0.35
+    assert result.entity_match_signals["strong_entity_match"] is False
+
+
+def test_pricing_path_without_competitor_entity_match_is_not_official():
+    quality = CollectorAgent._source_quality(
+        "https://www.openai.com/business/chatgpt-pricing",
+        "ChatGPT Enterprise pricing",
+        "djkhaseda appears in a search snippet but the page belongs to OpenAI.",
+        ["djkhaseda"],
+    )
+    assert quality != "official"
+
+
 def test_known_chinese_competitor_alias_keeps_normal_competitors_relevant():
     evidence = Evidence(
         competitor="飞书",
@@ -962,7 +990,9 @@ def test_collector_trace_records_mode_and_fallback_reason(db_session):
 def test_collector_mode_web_and_writer_mode_llm_parameters_both_pass(db_session, monkeypatch):
     monkeypatch.delenv("LLM_API_KEY", raising=False)
     task = make_task(db_session)
-    result = MockWorkflowRunner(db_session).run(task.task_id, collector_mode="web", writer_mode="llm")
+    runner = MockWorkflowRunner(db_session)
+    runner.collector = CollectorAgent(runner.trace_service, web_search_client=FakeWebSearchClient())
+    result = runner.run(task.task_id, collector_mode="web", writer_mode="llm")
     assert result["qa_result"].status == "passed"
     traces = TraceService(db_session).list_for_task(task.task_id)
     collector_trace = next(trace for trace in traces if trace.agent_name == "CollectorAgent")
@@ -1111,9 +1141,90 @@ def test_langgraph_normal_workflow_passes_and_finalizes(db_session):
     assert result["report"] is not None
     summary = result["workflow_summary"]
     assert summary["workflow_engine_used"] == "langgraph"
+    assert "evidence_gate" in summary["node_sequence"]
+    assert summary["evidence_gate_output"]["evidence_gate_passed"] is True
     assert summary["node_sequence"][-1] == "final_report"
     traces = TraceService(db_session).list_for_task(task.task_id)
-    assert {trace.agent_name for trace in traces} >= {"PlannerAgent", "CollectorAgent", "AnalystAgent", "ReportWriterAgent", "QaAgent", "FinalReport", "WorkflowEngine"}
+    assert {trace.agent_name for trace in traces} >= {"PlannerAgent", "CollectorAgent", "EvidenceGate", "AnalystAgent", "ReportWriterAgent", "QaAgent", "FinalReport", "WorkflowEngine"}
+
+
+def test_langgraph_run_cleanup_prevents_old_evidence_and_report_mix(db_session):
+    task = make_task(db_session)
+    first = LangGraphWorkflowRunner(db_session).run(task.task_id, workflow_engine_requested="langgraph")
+    assert first["report"] is not None
+    assert EvidenceService(db_session).list_for_task(task.task_id)
+
+    class UnrelatedSearchClient(FakeWebSearchClient):
+        def search(self, query: str, limit: int = 5):
+            return WebSearchResponse(
+                available=True,
+                attempted=True,
+                success=True,
+                elapsed_time_ms=1,
+                results=[
+                    SearchResult(title="TaxJar pricing", url="https://www.taxjar.com/pricing", snippet="TaxJar sales tax pricing."),
+                ],
+            )
+
+    runner = LangGraphWorkflowRunner(db_session)
+    runner.collector = CollectorAgent(runner.trace_service, web_search_client=UnrelatedSearchClient())
+    second = runner.run(task.task_id, collector_mode="web", workflow_engine_requested="langgraph")
+    assert second["report"] is None
+    latest_evidence = EvidenceService(db_session).list_for_task(task.task_id)
+    assert latest_evidence
+    assert all(item.relevance_level == "unrelated" for item in latest_evidence)
+    with pytest.raises(KeyError):
+        ReportService(db_session).get_latest_for_task(task.task_id)
+
+
+def test_langgraph_evidence_gate_blocks_random_competitors_before_report_writer(db_session):
+    task = make_custom_task(db_session, competitors=["xqzvra", "lmptuo"])
+
+    class UnrelatedSearchClient(FakeWebSearchClient):
+        def search(self, query: str, limit: int = 5):
+            return WebSearchResponse(
+                available=True,
+                attempted=True,
+                success=True,
+                elapsed_time_ms=1,
+                results=[
+                    SearchResult(title="Unrelated pricing", url="https://www.taxjar.com/pricing", snippet="TaxJar pricing page."),
+                ],
+            )
+
+    runner = LangGraphWorkflowRunner(db_session)
+    runner.collector = CollectorAgent(runner.trace_service, web_search_client=UnrelatedSearchClient())
+    result = runner.run(task.task_id, collector_mode="web", workflow_engine_requested="langgraph")
+    assert result["report"] is None
+    assert result["qa_result"].status == "failed"
+    assert result["qa_result"].rework_instructions[0].error_type == "missing_relevant_evidence"
+    assert result["workflow_summary"]["final_status"] == "insufficient_evidence"
+    assert result["workflow_summary"]["node_sequence"] == ["planner", "collector", "evidence_gate", "final_report"]
+    assert result["workflow_summary"]["evidence_gate_output"]["evidence_gate_passed"] is False
+    assert "report_writer" not in result["workflow_summary"]["node_sequence"]
+
+
+def test_langgraph_evidence_gate_auto_rework_routes_to_collector(db_session):
+    task = make_custom_task(db_session, competitors=["xqzvra", "lmptuo"])
+
+    class UnrelatedSearchClient(FakeWebSearchClient):
+        def search(self, query: str, limit: int = 5):
+            return WebSearchResponse(
+                available=True,
+                attempted=True,
+                success=True,
+                elapsed_time_ms=1,
+                results=[
+                    SearchResult(title="Unrelated pricing", url="https://www.taxjar.com/pricing", snippet="TaxJar pricing page."),
+                ],
+            )
+
+    runner = LangGraphWorkflowRunner(db_session)
+    runner.collector = CollectorAgent(runner.trace_service, web_search_client=UnrelatedSearchClient())
+    result = runner.run(task.task_id, collector_mode="web", auto_rework=True, workflow_engine_requested="langgraph")
+    routes = result["workflow_summary"]["conditional_routes_taken"]
+    assert any(route["from_node"] == "evidence_gate" and route["to_node"] == "collector" for route in routes)
+    assert result["workflow_summary"]["final_status"] == "manual_review"
 
 
 @pytest.mark.parametrize(
@@ -1280,3 +1391,69 @@ def test_langgraph_modes_and_competitor_coverage_still_work(db_session, monkeypa
     writer_trace = next(trace for trace in TraceService(db_session).list_for_task(task.task_id) if trace.agent_name == "ReportWriterAgent")
     writer_diagnostics = json.loads(writer_trace.output_summary)
     assert writer_diagnostics["writer_mode_requested"] == "llm"
+
+
+def test_task_run_created_for_each_langgraph_run(db_session):
+    task = make_task(db_session)
+    first = LangGraphWorkflowRunner(db_session).run(task.task_id, workflow_engine_requested="langgraph")
+    second = LangGraphWorkflowRunner(db_session).run(task.task_id, workflow_engine_requested="langgraph")
+    runs = TaskRunService(db_session).list_for_task(task.task_id)
+    assert len(runs) == 2
+    assert first["run_id"] != second["run_id"]
+    assert {run.run_id for run in runs} == {first["run_id"], second["run_id"]}
+
+
+def test_run_id_binds_evidence_report_qa_and_trace(db_session):
+    task = make_task(db_session)
+    result = LangGraphWorkflowRunner(db_session).run(task.task_id, workflow_engine_requested="langgraph")
+    run_id = result["run_id"]
+    evidence = EvidenceService(db_session).list_for_task(task.task_id, run_id=run_id)
+    report = ReportService(db_session).get_for_task_run(task.task_id, run_id)
+    qa_result = ReportService(db_session).qa_for_task_run(task.task_id, run_id)
+    traces = TraceService(db_session).list_for_task(task.task_id, run_id=run_id)
+    assert evidence and all(item.run_id == run_id for item in evidence)
+    assert report.run_id == run_id
+    assert qa_result.run_id == run_id
+    assert traces and all(trace.run_id == run_id for trace in traces)
+    workflow_trace = next(trace for trace in traces if trace.agent_name == "WorkflowEngine")
+    assert json.loads(workflow_trace.output_summary)["run_id"] == run_id
+
+
+def test_multiple_runs_do_not_mix_evidence_or_latest_report(db_session):
+    task = make_task(db_session)
+    first = LangGraphWorkflowRunner(db_session).run(task.task_id, workflow_engine_requested="langgraph")
+    first_run_id = first["run_id"]
+    first_evidence_ids = {item.evidence_id for item in EvidenceService(db_session).list_for_task(task.task_id, run_id=first_run_id)}
+
+    second = LangGraphWorkflowRunner(db_session).run(task.task_id, workflow_engine_requested="langgraph")
+    second_run_id = second["run_id"]
+    second_evidence = EvidenceService(db_session).list_for_task(task.task_id, run_id=second_run_id)
+    assert second_run_id != first_run_id
+    assert second_evidence and all(item.run_id == second_run_id for item in second_evidence)
+    assert not first_evidence_ids.intersection({item.evidence_id for item in second_evidence})
+    assert ReportService(db_session).get_latest_for_task(task.task_id).run_id == second_run_id
+    assert EvidenceService(db_session).list_for_task(task.task_id)[0].run_id == second_run_id
+
+
+def test_custom_runner_creates_run_and_old_chain_still_runs(db_session):
+    task = make_task(db_session)
+    run = TaskRunService(db_session).create_run(
+        task_id=task.task_id,
+        workflow_engine="custom",
+        collector_mode="mock",
+        analyst_mode="evidence",
+        writer_mode="mock",
+        content_mode=None,
+        demo_mode="normal",
+        auto_rework=False,
+    )
+    result = MockWorkflowRunner(db_session).run(task.task_id, run_id=run.run_id)
+    finished = TaskRunService(db_session).finish_run(
+        run.run_id,
+        status="completed",
+        final_status=result["qa_result"].status,
+        elapsed_time_ms=0,
+    )
+    assert result["qa_result"].status == "passed"
+    assert finished.run_id == run.run_id
+    assert EvidenceService(db_session).list_for_task(task.task_id, run_id=run.run_id)

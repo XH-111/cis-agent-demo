@@ -8,6 +8,7 @@ export type {
   Report,
   SearchTestResult,
   Task,
+  TaskRun,
   TraceRecord,
   LlmStatus,
   WriterDiagnostics,

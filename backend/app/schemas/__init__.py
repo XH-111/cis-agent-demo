@@ -14,6 +14,7 @@ from app.schemas.models import (
     ReworkHistoryItem,
     Report,
     Task,
+    TaskRun,
     TraceRecord,
     UserPersona,
 )
@@ -50,6 +51,7 @@ __all__ = [
     "ReworkHistoryItem",
     "Report",
     "Task",
+    "TaskRun",
     "TraceRecord",
     "UserPersona",
     "AnalystInput",

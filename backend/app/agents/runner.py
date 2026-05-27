@@ -50,13 +50,16 @@ class MockWorkflowRunner:
         writer_mode: str = "mock",
         collector_mode: str = "mock",
         analyst_mode: str = "evidence",
+        run_id: str | None = None,
     ) -> dict:
+        self.run_id = run_id
+        self.trace_service.set_run_context(run_id)
         task = self.task_service.update_status(task_id, "running")
-        plan = self.planner.run(PlannerInput(task=task))
+        plan = self.planner.run(PlannerInput(task=task, run_id=run_id))
         history: list[ReworkHistoryItem] = []
 
         if demo_mode == "qa_missing_evidence":
-            qa_result = self.qa.run(QaInput(task=task, evidence=[], demo_mode=demo_mode)).qa_result
+            qa_result = self.qa.run(QaInput(task=task, run_id=run_id, evidence=[], demo_mode=demo_mode)).qa_result
             self._save_qa(qa_result, history)
             if not auto_rework:
                 self.task_service.update_status(task_id, self._status_for_qa(qa_result), rework_count=qa_result.rework_count)
@@ -128,15 +131,16 @@ class MockWorkflowRunner:
     ) -> tuple[list[Evidence], AnalystOutput, ReportWriterOutput]:
         if evidence is None:
             collector_output = self.collector.run(
-                CollectorInput(task=task, retry_count=retry_count, collector_mode=collector_mode)
+                CollectorInput(task=task, run_id=self.run_id, retry_count=retry_count, collector_mode=collector_mode)
             )
             evidence = collector_output.evidence
-            self.evidence_service.save_many(task.task_id, evidence)
+            evidence = self.evidence_service.save_many(task.task_id, evidence, run_id=self.run_id)
 
         if analysis is None:
             analysis = self.analyst.run(
                 AnalystInput(
                     task=task,
+                    run_id=self.run_id,
                     evidence=evidence,
                     retry_count=retry_count,
                     force_invalid_extraction=demo_mode == "qa_invalid_extraction",
@@ -147,6 +151,7 @@ class MockWorkflowRunner:
         writer_output = self.writer.run(
             ReportWriterInput(
                 task=task,
+                run_id=self.run_id,
                 knowledge=analysis,
                 evidence=evidence,
                 retry_count=retry_count,
@@ -200,18 +205,20 @@ class MockWorkflowRunner:
                 collector_output = self.collector.run(
                     CollectorInput(
                         task=current_task,
+                        run_id=self.run_id,
                         retry_count=current_qa.rework_count,
                         collector_mode=collector_mode,
                     )
                 )
                 current_evidence = collector_output.evidence
-                self.evidence_service.save_many(current_task.task_id, current_evidence)
+                current_evidence = self.evidence_service.save_many(current_task.task_id, current_evidence, run_id=self.run_id)
                 current_analysis = self.analyst.run(
-                    AnalystInput(task=current_task, evidence=current_evidence, retry_count=current_qa.rework_count, analyst_mode=analyst_mode)
+                    AnalystInput(task=current_task, run_id=self.run_id, evidence=current_evidence, retry_count=current_qa.rework_count, analyst_mode=analyst_mode)
                 )
                 current_writer_output = self.writer.run(
                     ReportWriterInput(
                         task=current_task,
+                        run_id=self.run_id,
                         knowledge=current_analysis,
                         evidence=current_evidence,
                         retry_count=current_qa.rework_count,
@@ -220,11 +227,12 @@ class MockWorkflowRunner:
                 )
             elif current_qa.route_to == "AnalystAgent":
                 current_analysis = self.analyst.run(
-                    AnalystInput(task=current_task, evidence=current_evidence, retry_count=current_qa.rework_count, analyst_mode=analyst_mode)
+                    AnalystInput(task=current_task, run_id=self.run_id, evidence=current_evidence, retry_count=current_qa.rework_count, analyst_mode=analyst_mode)
                 )
                 current_writer_output = self.writer.run(
                     ReportWriterInput(
                         task=current_task,
+                        run_id=self.run_id,
                         knowledge=current_analysis,
                         evidence=current_evidence,
                         retry_count=current_qa.rework_count,
@@ -234,11 +242,12 @@ class MockWorkflowRunner:
             elif current_qa.route_to == "ReportWriterAgent":
                 if current_analysis is None:
                     current_analysis = self.analyst.run(
-                        AnalystInput(task=current_task, evidence=current_evidence, retry_count=current_qa.rework_count, analyst_mode=analyst_mode)
+                        AnalystInput(task=current_task, run_id=self.run_id, evidence=current_evidence, retry_count=current_qa.rework_count, analyst_mode=analyst_mode)
                     )
                 current_writer_output = self.writer.run(
                     ReportWriterInput(
                         task=current_task,
+                        run_id=self.run_id,
                         knowledge=current_analysis,
                         evidence=current_evidence,
                         retry_count=current_qa.rework_count,
@@ -251,6 +260,7 @@ class MockWorkflowRunner:
             current_qa = self.qa.run(
                 QaInput(
                     task=current_task,
+                    run_id=self.run_id,
                     evidence=current_evidence,
                     analysis=current_analysis,
                     report_output=current_writer_output,
@@ -285,13 +295,14 @@ class MockWorkflowRunner:
             final_output = self.final_report.run(
                 FinalReportInput(
                     task=task,
+                    run_id=self.run_id,
                     report=writer_output.report,
                     qa_result=qa_result,
                     evidence=evidence,
                     retry_count=qa_result.rework_count,
                 )
             )
-            self.report_service.save_report(final_output.report)
+            final_output.report = self.report_service.save_report(final_output.report, run_id=self.run_id)
             self.task_service.update_status(task.task_id, "completed", rework_count=qa_result.rework_count)
             self._save_qa(qa_result, history)
             return {"plan": plan, "qa_result": qa_result, "report": final_output.report}
@@ -302,7 +313,9 @@ class MockWorkflowRunner:
 
     def _save_qa(self, qa_result: QaResult, history: list[ReworkHistoryItem]) -> None:
         qa_result.rework_history = list(history)
-        self.report_service.save_qa(qa_result)
+        if self.run_id:
+            qa_result.run_id = self.run_id
+        self.report_service.save_qa(qa_result, run_id=self.run_id)
 
     @staticmethod
     def _status_for_qa(qa_result: QaResult) -> str:
@@ -321,6 +334,7 @@ def default_dag(status: str) -> dict:
         "nodes": [
             {"id": "PlannerAgent", "label": "规划任务范围和 DAG", "status": "completed" if active else "pending"},
             {"id": "CollectorAgent", "label": "采集 Mock 证据", "status": "completed" if completed or manual else ("completed" if status == "qa_failed" else "pending")},
+            {"id": "EvidenceGate", "label": "校验证据相关性", "status": "completed" if completed else ("failed" if status == "qa_failed" else ("manual_review" if manual else "pending"))},
             {"id": "AnalystAgent", "label": "抽取结构化竞品知识", "status": "completed" if completed or manual else ("completed" if status == "qa_failed" else "pending")},
             {"id": "ReportWriterAgent", "label": "撰写带证据报告", "status": "completed" if completed else ("failed" if status == "qa_failed" else "pending")},
             {"id": "QaAgent", "label": "校验输出质量", "status": "completed" if completed else ("manual_review" if manual else ("failed" if status == "qa_failed" else "pending"))},
@@ -328,7 +342,9 @@ def default_dag(status: str) -> dict:
         ],
         "edges": [
             {"source": "PlannerAgent", "target": "CollectorAgent", "label": "计划"},
-            {"source": "CollectorAgent", "target": "AnalystAgent", "label": "证据"},
+            {"source": "CollectorAgent", "target": "EvidenceGate", "label": "证据"},
+            {"source": "EvidenceGate", "target": "AnalystAgent", "label": "相关证据通过"},
+            {"source": "EvidenceGate", "target": "CollectorAgent", "label": "相关证据不足"},
             {"source": "AnalystAgent", "target": "ReportWriterAgent", "label": "知识"},
             {"source": "ReportWriterAgent", "target": "QaAgent", "label": "草稿"},
             {"source": "QaAgent", "target": "FinalReport", "label": "通过"},

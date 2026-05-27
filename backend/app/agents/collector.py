@@ -306,11 +306,15 @@ class CollectorAgent:
         competitor_tokens = [
             self_token
             for competitor in competitors
-            for self_token in competitor.lower().replace(" ", "").split(",")
+            for self_token in [competitor.lower().replace(" ", "")]
             if self_token
         ]
-        if any(token in host.replace("-", "").replace(".", "") for token in competitor_tokens) or any(
-            token in path for token in ("official", "pricing", "product", "features")
+        competitor_tokens.extend(CollectorAgent._known_domain_aliases(competitors))
+        host_competitor_match = any(token in host.replace("-", "").replace(".", "") for token in competitor_tokens)
+        title_or_snippet_competitor_match = any(token in f"{title} {snippet}".lower().replace(" ", "") for token in competitor_tokens)
+        path_competitor_match = any(token in path.replace("-", "").replace("_", "") for token in competitor_tokens)
+        if host_competitor_match or (
+            title_or_snippet_competitor_match and path_competitor_match and any(token in path for token in ("official", "pricing", "product", "features"))
         ):
             return "official"
         if len(snippet.strip()) < 30:
@@ -335,6 +339,18 @@ class CollectorAgent:
         if len(parts) >= 2:
             return ".".join(parts[-2:])
         return host or "unknown"
+
+    @staticmethod
+    def _known_domain_aliases(competitors: list[str]) -> list[str]:
+        aliases = {
+            "飞书": ["feishu", "lark"],
+            "钉钉": ["dingtalk"],
+            "企业微信": ["wecom", "wechatwork"],
+        }
+        output: list[str] = []
+        for competitor in competitors:
+            output.extend(aliases.get(competitor, []))
+        return output
 
     @staticmethod
     def _quality_summary(evidence: list[Evidence]) -> dict:
