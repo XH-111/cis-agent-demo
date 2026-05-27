@@ -30,6 +30,12 @@ export function EvidencePanel({ claim, evidence, evidenceIds }: { claim?: Claim;
             <div className="mt-2 text-slate-700">{item.snippet}</div>
             <div className="mt-2 break-all text-xs text-slate-500">{item.url ?? item.local_ref}</div>
             <div className="mt-2 grid gap-1 text-xs text-slate-600">
+              <span>content_mode: {item.content_mode === "page" ? "正文摘要模式" : "搜索摘要模式"}</span>
+              <span>page_fetch_success: {item.page_fetch_success ? "true" : "false"}</span>
+              {item.page_title && <span>page_title: {item.page_title}</span>}
+              {typeof item.content_chars === "number" && <span>content_chars: {item.content_chars}</span>}
+              {typeof item.fetch_status_code === "number" && <span>fetch_status_code: {item.fetch_status_code}</span>}
+              {item.page_fetch_error && <span>page_fetch_error: {item.page_fetch_error}</span>}
               <span>source_domain: {item.source_domain ?? "-"}</span>
               <span>source_quality: {item.source_quality ?? "unknown"}</span>
               <span>confidence: {Math.round(item.confidence * 100)}% · {confidenceLabel(item.confidence)}</span>
@@ -37,6 +43,20 @@ export function EvidencePanel({ claim, evidence, evidenceIds }: { claim?: Claim;
               <span>relevance_reason: {item.relevance_reason ?? "-"}</span>
               <span>collected_at: {item.collected_at ? new Date(item.collected_at).toLocaleString() : "-"}</span>
             </div>
+            {item.content_excerpt && (
+              <details className="mt-2 text-xs text-slate-600">
+                <summary className="cursor-pointer font-semibold">content_excerpt preview</summary>
+                <div className="mt-1 rounded border border-line bg-white p-2">
+                  <p className="whitespace-pre-wrap">{item.content_excerpt.slice(0, 300)}{item.content_excerpt.length > 300 ? "..." : ""}</p>
+                  {item.content_excerpt.length > 300 && (
+                    <details className="mt-2">
+                      <summary className="cursor-pointer font-semibold">展开完整 excerpt</summary>
+                      <p className="mt-1 whitespace-pre-wrap">{item.content_excerpt}</p>
+                    </details>
+                  )}
+                </div>
+              </details>
+            )}
             {item.entity_match_signals && (
               <details className="mt-2 text-xs text-slate-600">
                 <summary className="cursor-pointer font-semibold">entity_match_signals</summary>

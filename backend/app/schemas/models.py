@@ -10,6 +10,7 @@ TaskRunStatus = Literal["running", "completed", "qa_failed", "manual_review", "f
 AgentName = Literal[
     "PlannerAgent",
     "CollectorAgent",
+    "PageFetcher",
     "AnalystAgent",
     "ReportWriterAgent",
     "QaAgent",
@@ -74,6 +75,14 @@ class Evidence(BaseModel):
     relevance_level: Literal["high", "medium", "low", "unrelated"] = "high"
     relevance_reason: str = "Mock or legacy evidence is treated as relevant by default."
     entity_match_signals: dict[str, Any] = Field(default_factory=dict)
+    content_mode: Literal["snippet", "page"] = "snippet"
+    page_fetch_success: bool = False
+    page_title: str | None = None
+    content_excerpt: str | None = None
+    content_chars: int | None = None
+    fetch_status_code: int | None = None
+    page_fetch_error: str | None = None
+    fetched_at: datetime | None = None
 
     @model_validator(mode="after")
     def require_source_reference(self) -> "Evidence":

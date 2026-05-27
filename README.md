@@ -13,8 +13,12 @@ FastAPI REST API
        |
 SQLite + SQLAlchemy
        |
-MockWorkflowRunner
+RunnerFactory
        |
+LangGraphWorkflowRunner:
+PlannerAgent -> CollectorAgent -> EvidenceGate -> PageFetcher -> AnalystAgent -> ReportWriterAgent -> QaAgent -> FinalReportAgent
+
+CustomWorkflowRunner:
 PlannerAgent -> CollectorAgent -> AnalystAgent -> ReportWriterAgent -> QaAgent -> FinalReportAgent
 ```
 
@@ -159,6 +163,31 @@ GET /api/tasks/{task_id}/traces
 它们默认返回 latest run 的结果。需要回放历史版本时，请使用 `/runs/{run_id}/...` 系列接口。
 
 Phase 9.1 的 cleanup 是过渡策略。Phase 10 之后，产品化主线采用 `run_id` 隔离，不删除旧运行数据，支持历史报告版本查看和 Trace 回放。
+
+## Phase 11: Production Web Collection / PageFetcher
+
+LangGraph 主线在 `EvidenceGate` 之后增加 `PageFetcher`：
+
+```text
+PlannerAgent -> CollectorAgent -> EvidenceGate -> PageFetcher -> AnalystAgent -> ReportWriterAgent -> QaAgent -> FinalReportAgent
+```
+
+PageFetcher 只处理 `high / medium` relevance 且非低质量来源的 Evidence。它会轻量获取公开 HTML 页面，抽取 `title/h1/h2/h3/p/li` 文本，保存截断后的 `content_excerpt`，不保存完整网页正文。
+
+可配置环境变量：
+
+```bash
+PAGE_FETCH_PROVIDER=local
+PAGE_FETCH_TIMEOUT=10
+PAGE_FETCH_MAX_BYTES=500000
+PAGE_CONTENT_MAX_CHARS=3000
+PAGE_EXCERPT_MAX_CHARS=1000
+PAGE_FETCH_MAX_PER_COMPETITOR=2
+PAGE_FETCH_MAX_PER_RUN=10
+PAGE_FETCH_RESPECT_ROBOTS=true
+```
+
+抓取失败、超时、非 HTML、403/404 或内容过大时，workflow 不会崩溃；Evidence 会保持 `content_mode=snippet`，继续使用 Tavily snippet，并在 Trace / Evidence Panel 中记录 `page_fetch_error`。
 
 ## ReportWriter 模式
 

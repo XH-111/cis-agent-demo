@@ -17,6 +17,8 @@ class PlannerAgent:
                 nodes=[
                     DagNode(id="PlannerAgent", label="规划任务范围和 DAG", status="completed"),
                     DagNode(id="CollectorAgent", label="采集 Mock 证据", status="pending"),
+                    DagNode(id="EvidenceGate", label="相关证据前置校验", status="pending"),
+                    DagNode(id="PageFetcher", label="抓取轻量正文摘要", status="pending"),
                     DagNode(id="AnalystAgent", label="抽取结构化竞品知识", status="pending"),
                     DagNode(id="ReportWriterAgent", label="撰写带证据报告", status="pending"),
                     DagNode(id="QaAgent", label="校验 Schema 和证据", status="pending"),
@@ -24,7 +26,9 @@ class PlannerAgent:
                 ],
                 edges=[
                     DagEdge(source="PlannerAgent", target="CollectorAgent", label="计划"),
-                    DagEdge(source="CollectorAgent", target="AnalystAgent", label="证据"),
+                    DagEdge(source="CollectorAgent", target="EvidenceGate", label="证据"),
+                    DagEdge(source="EvidenceGate", target="PageFetcher", label="相关证据通过"),
+                    DagEdge(source="PageFetcher", target="AnalystAgent", label="正文摘要"),
                     DagEdge(source="AnalystAgent", target="ReportWriterAgent", label="知识"),
                     DagEdge(source="ReportWriterAgent", target="QaAgent", label="草稿"),
                     DagEdge(source="QaAgent", target="FinalReport", label="通过"),

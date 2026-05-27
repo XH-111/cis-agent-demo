@@ -44,6 +44,14 @@ export type Evidence = {
   relevance_level?: "high" | "medium" | "low" | "unrelated";
   relevance_reason?: string;
   entity_match_signals?: Record<string, unknown>;
+  content_mode?: "snippet" | "page";
+  page_fetch_success?: boolean;
+  page_title?: string | null;
+  content_excerpt?: string | null;
+  content_chars?: number | null;
+  fetch_status_code?: number | null;
+  page_fetch_error?: string | null;
+  fetched_at?: string | null;
   collected_at: string;
 };
 
@@ -138,6 +146,21 @@ export type WorkflowSummary = {
     unrelated_evidence_count_by_competitor?: Record<string, number>;
     suggested_route?: string | null;
     suggested_action?: string;
+  };
+  page_fetch_output?: {
+    page_fetch_provider?: string;
+    page_fetch_attempted?: boolean;
+    page_fetch_attempt_count?: number;
+    page_fetch_success_count?: number;
+    page_fetch_failed_count?: number;
+    page_fetch_skipped_count?: number;
+    page_fetch_fallback_count?: number;
+    page_fetch_error_summary?: Record<string, number>;
+    avg_content_chars?: number;
+    max_content_chars?: number;
+    fetched_evidence_ids?: string[];
+    skipped_evidence_ids?: string[];
+    run_id?: string | null;
   };
 };
 

@@ -2,6 +2,7 @@ import json
 import pytest
 import time
 import httpx
+from datetime import datetime
 from pydantic import ValidationError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -39,6 +40,7 @@ from app.schemas import (
     ReworkInstruction,
 )
 from app.services.llm_client import LlmResponse
+from app.services.page_fetcher import PageFetchResult, PageFetcher
 from app.services.report_service import ReportService
 from app.services.task_service import TaskService
 from app.services.task_run_service import TaskRunService
@@ -199,6 +201,27 @@ def test_analyst_trace_records_mode_and_counts(db_session):
     assert diagnostics["analyst_mode_requested"] == "evidence"
     assert diagnostics["analyst_mode_used"] == "evidence"
     assert diagnostics["extracted_feature_count"] > 0
+
+
+def test_analyst_prefers_content_excerpt_over_snippet(db_session):
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    evidence = [
+        Evidence(
+            source_type="public_web",
+            url="https://alpha.example.com",
+            competitor="AlphaCI",
+            snippet="Brief source without target keywords.",
+            content_mode="page",
+            page_fetch_success=True,
+            content_excerpt="AlphaCI product page describes AI automation pricing and enterprise team workflows.",
+            confidence=0.9,
+            relevance_level="high",
+        )
+    ]
+    output = AnalystAgent(trace_service).run(AnalystInput(task=task, evidence=evidence, analyst_mode="evidence"))
+    assert "AI" in output.feature_tree.core_features
+    assert output.diagnostics["content_source_used"]["page_excerpt"] == 1
 
 
 def test_missing_evidence_routes_to_collector(db_session):
@@ -366,6 +389,110 @@ class FakeHttpResponse:
     def raise_for_status(self):
         if self.status_code >= 400:
             raise httpx.HTTPStatusError("Client error", request=self.request, response=httpx.Response(self.status_code, text=self.text, request=self.request))
+
+
+def test_page_fetcher_success_adds_content_excerpt():
+    def handler(request):
+        html = "<html><head><title>Alpha Pricing</title></head><body><nav>menu</nav><h1>Alpha pricing</h1><p>Alpha supports AI automation pricing for enterprise teams.</p></body></html>"
+        return httpx.Response(200, headers={"content-type": "text/html; charset=utf-8"}, text=html)
+
+    fetcher = PageFetcher(transport=httpx.MockTransport(handler), content_max_chars=3000, excerpt_max_chars=1200, respect_robots=False)
+    evidence = [
+        Evidence(
+            source_type="public_web",
+            url="https://alpha.example.com/pricing",
+            source_domain="alpha.example.com",
+            source_quality="official",
+            competitor="AlphaCI",
+            snippet="Alpha snippet",
+            confidence=0.9,
+            relevance_level="high",
+        )
+    ]
+    enriched, diagnostics = fetcher.enrich(evidence, run_id="run_1")
+    assert diagnostics["page_fetch_success_count"] == 1
+    assert enriched[0].run_id == "run_1"
+    assert enriched[0].content_mode == "page"
+    assert enriched[0].page_fetch_success is True
+    assert enriched[0].page_title == "Alpha Pricing"
+    assert "AI automation" in (enriched[0].content_excerpt or "")
+
+
+def test_page_fetcher_timeout_falls_back_to_snippet():
+    def handler(request):
+        raise httpx.TimeoutException("timeout")
+
+    fetcher = PageFetcher(transport=httpx.MockTransport(handler), timeout=1, respect_robots=False)
+    evidence = [
+        Evidence(source_type="public_web", url="https://alpha.example.com", competitor="AlphaCI", snippet="Alpha snippet", confidence=0.9, relevance_level="high")
+    ]
+    enriched, diagnostics = fetcher.enrich(evidence, run_id="run_1")
+    assert diagnostics["page_fetch_failed_count"] == 1
+    assert enriched[0].content_mode == "snippet"
+    assert enriched[0].page_fetch_success is False
+    assert enriched[0].page_fetch_error == "timeout"
+
+
+def test_page_fetcher_non_html_falls_back_to_snippet():
+    def handler(request):
+        return httpx.Response(200, headers={"content-type": "application/pdf"}, content=b"%PDF")
+
+    fetcher = PageFetcher(transport=httpx.MockTransport(handler), respect_robots=False)
+    evidence = [
+        Evidence(source_type="public_web", url="https://alpha.example.com/file.pdf", competitor="AlphaCI", snippet="Alpha snippet", confidence=0.9, relevance_level="high")
+    ]
+    enriched, _ = fetcher.enrich(evidence, run_id="run_1")
+    assert enriched[0].content_mode == "snippet"
+    assert enriched[0].page_fetch_error == "non_html_content"
+
+
+def test_page_fetcher_excerpt_limit_and_skips_unrelated():
+    long_text = "Alpha pricing feature. " * 300
+
+    def handler(request):
+        return httpx.Response(200, headers={"content-type": "text/html"}, text=f"<html><body><p>{long_text}</p></body></html>")
+
+    fetcher = PageFetcher(transport=httpx.MockTransport(handler), content_max_chars=500, excerpt_max_chars=120, respect_robots=False)
+    evidence = [
+        Evidence(source_type="public_web", url="https://alpha.example.com", competitor="AlphaCI", snippet="Alpha snippet", confidence=0.9, relevance_level="high"),
+        Evidence(source_type="public_web", url="https://taxjar.com", competitor="AlphaCI", snippet="TaxJar unrelated", confidence=0.6, relevance_level="unrelated"),
+    ]
+    enriched, diagnostics = fetcher.enrich(evidence, run_id="run_1")
+    assert len(enriched[0].content_excerpt or "") <= 120
+    assert enriched[0].content_chars == 500
+    assert enriched[1].page_fetch_error == "skipped:relevance_unrelated"
+    assert diagnostics["page_fetch_skipped_count"] == 1
+
+
+def test_page_fetcher_respects_competitor_and_run_limits():
+    class CountingFetcher(PageFetcher):
+        def __init__(self):
+            super().__init__(max_per_competitor=1, max_per_run=2, respect_robots=False)
+            self.calls = 0
+
+        def fetch(self, url: str, *, run_id: str | None, evidence_id: str, competitor: str | None):
+            self.calls += 1
+            return PageFetchResult(
+                success=True,
+                status_code=200,
+                page_title="ok",
+                content_excerpt=f"{competitor} content",
+                content_chars=10,
+                fetched_at=datetime.utcnow(),
+            )
+
+    fetcher = CountingFetcher()
+    evidence = [
+        Evidence(source_type="public_web", url="https://alpha.example.com/1", competitor="AlphaCI", snippet="Alpha 1", confidence=0.9, relevance_level="high"),
+        Evidence(source_type="public_web", url="https://alpha.example.com/2", competitor="AlphaCI", snippet="Alpha 2", confidence=0.9, relevance_level="high"),
+        Evidence(source_type="public_web", url="https://beta.example.com/1", competitor="BetaIntel", snippet="Beta 1", confidence=0.9, relevance_level="high"),
+        Evidence(source_type="public_web", url="https://gamma.example.com/1", competitor="Gamma", snippet="Gamma 1", confidence=0.9, relevance_level="high"),
+    ]
+    enriched, diagnostics = fetcher.enrich(evidence, run_id="run_1")
+    assert fetcher.calls == 2
+    assert diagnostics["page_fetch_success_count"] == 2
+    assert any(item.page_fetch_error == "skipped:max_per_competitor" for item in enriched)
+    assert any(item.page_fetch_error == "skipped:max_per_run" for item in enriched)
 
 
 def test_llm_writer_success_records_diagnostics_and_elapsed_time(db_session):
@@ -1145,7 +1272,47 @@ def test_langgraph_normal_workflow_passes_and_finalizes(db_session):
     assert summary["evidence_gate_output"]["evidence_gate_passed"] is True
     assert summary["node_sequence"][-1] == "final_report"
     traces = TraceService(db_session).list_for_task(task.task_id)
-    assert {trace.agent_name for trace in traces} >= {"PlannerAgent", "CollectorAgent", "EvidenceGate", "AnalystAgent", "ReportWriterAgent", "QaAgent", "FinalReport", "WorkflowEngine"}
+    assert {trace.agent_name for trace in traces} >= {"PlannerAgent", "CollectorAgent", "EvidenceGate", "PageFetcher", "AnalystAgent", "ReportWriterAgent", "QaAgent", "FinalReport", "WorkflowEngine"}
+
+
+def test_langgraph_page_fetcher_trace_sequence_and_run_id(db_session):
+    task = make_task(db_session)
+
+    class FakePageFetcher:
+        def enrich(self, evidence, *, run_id=None, enabled=True):
+            enriched = [
+                item.model_copy(
+                    update={
+                        "run_id": run_id,
+                        "content_mode": "page",
+                        "page_fetch_success": True,
+                        "content_excerpt": f"{item.competitor} AI automation pricing enterprise team content.",
+                        "content_chars": 64,
+                    }
+                )
+                for item in evidence
+            ]
+            return enriched, {
+                "page_fetch_attempted": True,
+                "page_fetch_success_count": len(enriched),
+                "page_fetch_failed_count": 0,
+                "page_fetch_skipped_count": 0,
+                "page_fetch_fallback_count": 0,
+                "fetched_evidence_ids": [item.evidence_id for item in enriched],
+                "skipped_evidence_ids": [],
+                "run_id": run_id,
+            }
+
+    runner = LangGraphWorkflowRunner(db_session)
+    runner.page_fetcher = FakePageFetcher()
+    result = runner.run(task.task_id, workflow_engine_requested="langgraph", content_mode="page")
+    assert "page_fetcher" in result["workflow_summary"]["node_sequence"]
+    assert result["workflow_summary"]["page_fetch_output"]["page_fetch_success_count"] > 0
+    evidence = EvidenceService(db_session).list_for_task(task.task_id, run_id=result["run_id"])
+    assert evidence and all(item.run_id == result["run_id"] for item in evidence)
+    assert any(item.content_mode == "page" for item in evidence)
+    trace = next(item for item in TraceService(db_session).list_for_task(task.task_id, run_id=result["run_id"]) if item.agent_name == "PageFetcher")
+    assert json.loads(trace.output_summary)["run_id"] == result["run_id"]
 
 
 def test_langgraph_run_cleanup_prevents_old_evidence_and_report_mix(db_session):

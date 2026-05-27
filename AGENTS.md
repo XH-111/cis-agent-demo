@@ -66,6 +66,7 @@ CIS AI 挑战赛是当前交付节点，不是系统终点。后续工程决策�
 PlannerAgent
 -> CollectorAgent
 -> EvidenceGate
+-> PageFetcher
 -> AnalystAgent
 -> ReportWriterAgent
 -> QaAgent
@@ -80,7 +81,7 @@ PlannerAgent -> CollectorAgent -> AnalystAgent -> ReportWriterAgent -> QaAgent -
 
 QA 可以把未通过质检的任务打回 CollectorAgent、AnalystAgent 或 ReportWriterAgent，并通过 Trace 展示完整执行过程。
 
-EvidenceGate 位于 CollectorAgent 之后、AnalystAgent 之前，用于在报告生成前拦截明显无关或不足的 Evidence。
+EvidenceGate 位于 CollectorAgent 之后、PageFetcher 之前，用于在正文抓取和报告生成前拦截明显无关或不足的 Evidence。PageFetcher 只处理通过相关性门禁的 Evidence。
 
 ## Engineering Principles
 
@@ -135,6 +136,16 @@ EvidenceGate 位于 CollectorAgent 之后、AnalystAgent 之前，用于在报�
 - 如果缺少相关证据且 `auto_rework=true`，打回 CollectorAgent。
 - 如果缺少相关证据且 `auto_rework=false`，停止进入 AnalystAgent / ReportWriterAgent，并进入 `insufficient_evidence` 或 `manual_review` 状态。
 - EvidenceGate 必须记录 workflow-level Trace 和 `conditional_routes_taken`。
+
+### PageFetcher
+
+- PageFetcher 是 LangGraph 主线中的轻量正文摘要抓取节点。
+- 位于 EvidenceGate 之后、AnalystAgent 之前。
+- 只处理 `relevance_level=high/medium` 且 `source_quality` 不是 `low_quality` 的公开网页 Evidence。
+- 不采集登录后内容、私人数据或敏感数据，不绕过 robots.txt，不做浏览器自动化。
+- 只保存截断后的 `content_excerpt`，不保存完整网页正文。
+- 抓取失败、非 HTML、超时、403/404 或内容过大时必须 fallback 到原始 snippet，并写入 Trace。
+- PageFetcher 是 RAG 前的内容准备层，未来 Chunker / Indexer 只能消费相关 Evidence 的受控摘要或 chunk。
 
 ### AnalystAgent
 
@@ -197,6 +208,7 @@ EvidenceGate 位于 CollectorAgent 之后、AnalystAgent 之前，用于在报�
 - Evidence 必须包含 `source_type`、`url` 或 `local_ref`、`collected_at`、`snippet`、`confidence`。
 - Web Evidence 应包含 `source_domain`、`source_quality`、`competitor`。
 - Web Evidence 应包含 `relevance_score`、`relevance_level`、`relevance_reason` 和 `entity_match_signals`。
+- PageFetcher 增强后的 Evidence 应包含 `content_mode`、`page_fetch_success`、`page_title`、`content_excerpt`、`content_chars`、`fetch_status_code`、`page_fetch_error` 和 `fetched_at`。
 - AgentMessage 必须包含 `trace_id`、`task_id`、`from_agent`、`to_agent`、`message_type` 和 `schema_name`。
 - 模型输出不合法时不能静默通过。
 
@@ -245,10 +257,10 @@ Phase 10 起采用 `run_id` 作为产品化 run isolation 策略。
 
 ## EvidenceGate Policy
 
-EvidenceGate 是 RAG 前的数据质量防线，位于 LangGraph 主线的 CollectorAgent 之后、AnalystAgent 之前。
+EvidenceGate 是 RAG 前的数据质量防线，位于 LangGraph 主线的 CollectorAgent 之后、PageFetcher 之前。
 
 ```text
-PlannerAgent -> CollectorAgent -> EvidenceGate -> AnalystAgent -> ReportWriterAgent -> QaAgent -> FinalReportAgent
+PlannerAgent -> CollectorAgent -> EvidenceGate -> PageFetcher -> AnalystAgent -> ReportWriterAgent -> QaAgent -> FinalReportAgent
 ```
 
 - EvidenceGate 检查每个 competitor 是否至少有 high / medium relevance Evidence。
@@ -257,6 +269,19 @@ PlannerAgent -> CollectorAgent -> EvidenceGate -> AnalystAgent -> ReportWriterAg
 - EvidenceGate 必须记录 workflow-level Trace。
 - `conditional_routes_taken` 必须记录 EvidenceGate 的跳转。
 - 未来 RAG 只能索引 relevant Evidence / chunks，不能索引 unrelated Evidence。
+
+## PageFetcher Policy
+
+PageFetcher 是 Production Web Collection 的最小实现，不是复杂爬虫。
+
+- PageFetcher 只接入 `LangGraphWorkflowRunner`，不扩展 Custom Runner。
+- PageFetcher 只抓取通过 EvidenceGate 的 high / medium relevance Evidence。
+- 每个 competitor 和每次 run 都必须有抓取数量上限。
+- 下载大小、正文长度和保存 excerpt 长度都必须受环境变量限制。
+- 只处理 `text/html`，不处理 PDF、图片、视频或二进制文件。
+- 不保存完整网页全文，只保存用于分析的短摘要 `content_excerpt`。
+- 抓取失败不应导致 workflow 崩溃，应 fallback 到搜索 snippet。
+- AnalystAgent 在 evidence 模式下应优先使用 `content_excerpt`，没有时再使用 `snippet`。
 
 ## Workflow Engine Status
 
@@ -418,6 +443,7 @@ From Phase 9 onward, new capabilities must be developed on the LangGraph workflo
 - Phase 9: Evidence Relevance Gate
 - Phase 9.1: Run Isolation + EvidenceGate
 - Phase 10: Run ID / Report Versioning
+- Phase 11: Production Web Collection / PageFetcher
 
 ## Product Requirements
 

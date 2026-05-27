@@ -45,6 +45,7 @@ class WorkflowState(TypedDict, total=False):
     qa_output: QaOutput | None
     final_report_output: FinalReportOutput | None
     evidence_gate_output: dict[str, Any]
+    page_fetch_output: dict[str, Any]
     evidence: list[Evidence]
     report: Report | None
     qa_result: QaResult | None

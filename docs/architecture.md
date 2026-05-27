@@ -52,7 +52,8 @@ flowchart LR
     Start([创建竞品分析任务]) --> Planner[PlannerAgent<br/>生成任务计划与 DAG]
     Planner --> Collector[CollectorAgent<br/>采集 Mock / Web Evidence]
     Collector --> Gate[EvidenceGate<br/>相关证据前置校验]
-    Gate -->|passed| Analyst[AnalystAgent<br/>生成结构化竞品知识]
+    Gate -->|passed| PageFetcher[PageFetcher<br/>轻量正文摘要抓取]
+    PageFetcher --> Analyst[AnalystAgent<br/>生成结构化竞品知识]
     Gate -->|missing_relevant_evidence| Stop[insufficient_evidence / Collector rework]
     Analyst --> Writer[ReportWriterAgent<br/>生成 Markdown / JSON 报告]
     Writer --> QA[QaAgent<br/>Schema / Evidence / 格式校验]
@@ -73,11 +74,11 @@ flowchart LR
 
 说明：
 
-1. 整个竞品分析被拆成 Planner、Collector、EvidenceGate、Analyst、ReportWriter、QA 和 FinalReport 步骤。
+1. 整个竞品分析被拆成 Planner、Collector、EvidenceGate、PageFetcher、Analyst、ReportWriter、QA 和 FinalReport 步骤。
 2. 每个 Agent 都使用结构化 Input / Output Schema，避免自由文本在 Agent 之间失控传递。
-3. EvidenceGate 位于 Collector 后、Analyst 前，用于拦截缺少 high / medium relevance Evidence 的任务。
-4. ReportWriter 生成的每个 Claim 必须绑定 `evidence_ids`，从报告结论可以反查来源 Evidence。
-5. 每个 Agent 或 workflow-level 节点都会写入 Trace，包括输入摘要、输出摘要、Schema 校验结果、耗时和错误信息。
+3. EvidenceGate 位于 Collector 后、PageFetcher 前，用于拦截缺少 high / medium relevance Evidence 的任务。
+4. PageFetcher 只对通过门禁的公开网页 Evidence 抓取短正文摘要，失败时 fallback 到搜索 snippet。
+5. ReportWriter 生成的每个 Claim 必须绑定 `evidence_ids`，从报告结论可以反查来源 Evidence。
 
 ## 3. QA 自动返工流程图
 
@@ -127,7 +128,8 @@ flowchart TD
     State --> PlannerNode[planner_node]
     PlannerNode --> CollectorNode[collector_node]
     CollectorNode --> EvidenceGateNode[evidence_gate_node]
-    EvidenceGateNode -->|passed| AnalystNode[analyst_node]
+    EvidenceGateNode -->|passed| PageFetcherNode[page_fetcher_node]
+    PageFetcherNode --> AnalystNode[analyst_node]
     EvidenceGateNode -->|missing_relevant_evidence + auto_rework| CollectorNode
     EvidenceGateNode -->|insufficient_evidence / max_rework| FinalNode[final_report_node]
     AnalystNode --> WriterNode[report_writer_node]
@@ -140,6 +142,7 @@ flowchart TD
 
     PlannerNode -. calls .-> PlannerRun[PlannerAgent.run]
     CollectorNode -. calls .-> CollectorRun[CollectorAgent.run]
+    PageFetcherNode -. calls .-> PageFetcherSvc[PageFetcher.enrich]
     AnalystNode -. calls .-> AnalystRun[AnalystAgent.run]
     WriterNode -. calls .-> WriterRun[ReportWriterAgent.run]
     QANode -. calls .-> QARun[QaAgent.run]
@@ -161,7 +164,8 @@ flowchart TD
     TaskRun --> Planner[PlannerAgent]
     Planner --> Collector[CollectorAgent]
     Collector --> Gate{EvidenceGate<br/>每个 competitor 是否有 high / medium Evidence?}
-    Gate -->|yes| Analyst[AnalystAgent]
+    Gate -->|yes| PageFetcher[PageFetcher]
+    PageFetcher --> Analyst[AnalystAgent]
     Gate -->|no + auto_rework| Collector
     Gate -->|no + no auto_rework| Stop[insufficient_evidence]
     Gate -->|max_rework reached| Manual[manual_review]
@@ -171,7 +175,8 @@ flowchart TD
 1. Phase 10 后每次 workflow run 都会创建 TaskRun，并生成独立 `run_id`。
 2. Evidence、Report、QA 和 Trace 都绑定当前 `run_id`，旧运行数据不会参与当前运行。
 3. EvidenceGate 是 RAG 前的数据质量防线，避免 unrelated Evidence 被索引或被后续 Agent 当成事实依据。
-4. 随机竞品缺少相关公开证据时，系统会停在 `insufficient_evidence` 或打回 Collector，不进入正式报告生成。
+4. PageFetcher 只处理通过 EvidenceGate 的 relevant Evidence，并保存截断后的 `content_excerpt`。
+5. 随机竞品缺少相关公开证据时，系统会停在 `insufficient_evidence` 或打回 Collector，不进入正式报告生成。
 
 ## 6. TaskRun / run_id 版本隔离
 

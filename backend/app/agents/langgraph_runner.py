@@ -27,6 +27,7 @@ from app.schemas import (
 )
 from app.schemas.workflow_state import WorkflowState
 from app.services.evidence_service import EvidenceService
+from app.services.page_fetcher import PageFetcher
 from app.services.report_service import ReportService
 from app.services.task_run_service import TaskRunService
 from app.services.task_service import TaskService
@@ -47,6 +48,7 @@ class LangGraphWorkflowRunner:
         self.writer = ReportWriterAgent(self.trace_service)
         self.qa = QaAgent(self.trace_service)
         self.final_report = FinalReportAgent(self.trace_service)
+        self.page_fetcher = PageFetcher()
         self.graph = self._build_graph()
 
     def run(
@@ -97,6 +99,7 @@ class LangGraphWorkflowRunner:
             "qa_output": None,
             "final_report_output": None,
             "evidence_gate_output": {},
+            "page_fetch_output": {},
             "evidence": [],
             "report": None,
             "qa_result": None,
@@ -146,6 +149,7 @@ class LangGraphWorkflowRunner:
         graph.add_node("planner", self.planner_node)
         graph.add_node("collector", self.collector_node)
         graph.add_node("evidence_gate", self.evidence_gate_node)
+        graph.add_node("page_fetcher", self.page_fetcher_node)
         graph.add_node("analyst", self.analyst_node)
         graph.add_node("report_writer", self.report_writer_node)
         graph.add_node("qa", self.qa_node)
@@ -158,10 +162,11 @@ class LangGraphWorkflowRunner:
             self.route_after_evidence_gate,
             {
                 "collector": "collector",
-                "analyst": "analyst",
+                "page_fetcher": "page_fetcher",
                 "final_report": "final_report",
             },
         )
+        graph.add_edge("page_fetcher", "analyst")
         graph.add_edge("analyst", "report_writer")
         graph.add_edge("report_writer", "qa")
         graph.add_conditional_edges(
@@ -331,6 +336,22 @@ class LangGraphWorkflowRunner:
         )
         return {**state, "task": task, "analyst_output": output, "node_sequence": [*state["node_sequence"], "analyst"]}
 
+    def page_fetcher_node(self, state: WorkflowState) -> WorkflowState:
+        task = self._current_task(state)
+        fetch_enabled = state.get("content_mode") == "page" or (state.get("content_mode") is None and state.get("collector_mode") == "web")
+        evidence, output = self.page_fetcher.enrich(state.get("evidence", []), run_id=state.get("run_id"), enabled=fetch_enabled)
+        output["content_mode_requested"] = state.get("content_mode")
+        output["page_fetch_enabled"] = fetch_enabled
+        saved_evidence = self.evidence_service.save_many(task.task_id, evidence, run_id=state.get("run_id"))
+        self._save_page_fetcher_trace(task.task_id, state.get("run_id"), output, state["rework_count"])
+        return {
+            **state,
+            "task": task,
+            "evidence": saved_evidence,
+            "page_fetch_output": output,
+            "node_sequence": [*state["node_sequence"], "page_fetcher"],
+        }
+
     def report_writer_node(self, state: WorkflowState) -> WorkflowState:
         task = self._current_task(state)
         output = self.writer.run(
@@ -431,7 +452,7 @@ class LangGraphWorkflowRunner:
     def route_after_evidence_gate(self, state: WorkflowState) -> str:
         gate = state.get("evidence_gate_output", {})
         if gate.get("evidence_gate_passed"):
-            return "analyst"
+            return "page_fetcher"
         if state.get("final_status") in {"manual_review", "insufficient_evidence"}:
             return "final_report"
         if state.get("auto_rework") and state.get("rework_count", 0) < state.get("max_rework", MAX_REWORK):
@@ -489,6 +510,7 @@ class LangGraphWorkflowRunner:
             "node_sequence": state.get("node_sequence", []),
             "conditional_routes_taken": state.get("conditional_routes_taken", []),
             "evidence_gate_output": state.get("evidence_gate_output", {}),
+            "page_fetch_output": state.get("page_fetch_output", {}),
             "run_isolation_strategy": state.get("run_isolation_strategy", "run_id"),
             "run_cleanup_summary": state.get("run_cleanup_summary", {}),
             "rework_count": state.get("qa_result").rework_count if state.get("qa_result") else state.get("rework_count", 0),
@@ -539,5 +561,22 @@ class LangGraphWorkflowRunner:
                 elapsed_time_ms=0,
                 retry_count=retry_count,
                 error_message=None if output["evidence_gate_passed"] else "missing_relevant_evidence",
+            )
+        )
+
+    def _save_page_fetcher_trace(self, task_id: str, run_id: str | None, output: dict, retry_count: int) -> None:
+        self.trace_service.save(
+            TraceRecord(
+                trace_id=f"trace_{uuid4().hex[:10]}",
+                task_id=task_id,
+                run_id=run_id,
+                agent_name="PageFetcher",
+                input_summary="Fetch lightweight page excerpts for high/medium relevance Evidence",
+                output_summary=json.dumps(output, ensure_ascii=False),
+                schema_validation_result="passed",
+                model_name="langgraph-page-fetcher",
+                elapsed_time_ms=0,
+                retry_count=retry_count,
+                error_message=None,
             )
         )

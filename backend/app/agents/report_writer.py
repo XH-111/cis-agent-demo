@@ -384,6 +384,14 @@ class ReportWriterAgent:
         system = (
             "You are ReportWriterAgent. Write only from supplied Evidence and Knowledge. "
             "Do not invent sources. Every key claim must bind evidence_ids. "
+            "The markdown_report should target 1800-2200 Chinese characters when evidence coverage is sufficient. "
+            "Do not pad with unsupported facts. If evidence is insufficient, the report may be shorter, but must explain the evidence gaps, uncertainty, and next validation steps. "
+            "Structure markdown_report with these sections: "
+            "# 竞品分析报告; ## 1. 执行摘要; ## 2. 分析范围与证据说明; ## 3. 竞品概览; "
+            "## 4. 功能能力对比; ## 5. 定价与商业模式分析; ## 6. 用户画像与目标场景; "
+            "## 7. 风险、不确定性与证据缺口; ## 8. 建议与下一步验证方向. "
+            "For each competitor, discuss positioning, feature signals, pricing/business-model signals, user/persona signals, and evidence gaps. "
+            "Use tables where useful, but every concrete row-level conclusion must remain traceable to claim evidence_ids. "
             "Evidence ids are not automatically trustworthy: only use Evidence whose relevance_level is high or medium for concrete claims. "
             "Do not use unrelated Evidence. Low relevance Evidence may only support cautious risk notes. "
             "You must cover every input competitor. Each competitor needs its own subsection and at least one claim when its own evidence exists. "
@@ -398,9 +406,15 @@ class ReportWriterAgent:
         )
         user = (
             "Return JSON with keys markdown_report, json_report, claims. "
+            "markdown_report must be a complete, board-readable competitor analysis report, not a short summary. "
+            "When evidence is sufficient, aim for 1800-2200 Chinese characters. "
+            "Expand each required section with evidence-backed analysis and avoid generic filler. "
             "Each claim must include claim_id, competitor, text, evidence_ids, category, confidence. "
+            "Create 2-4 claims per competitor when that competitor has enough high or medium relevance evidence. "
+            "If a competitor has insufficient evidence, create only cautious risk/recommendation claims and clearly state the evidence gap. "
             "claims[].category must be exactly one of: positioning, feature, pricing, persona, risk, recommendation. "
             "claims[].competitor must be one of the input competitors. "
+            "Each claim text should be specific enough to support report sections, but must not introduce facts absent from the supplied input. "
             "Example claim: "
             '{"claim_id":"claim_1","competitor":"Feishu","text":"source-backed conclusion","category":"positioning","evidence_ids":["ev_1"],"confidence":0.82}. '
             "Input:\n"

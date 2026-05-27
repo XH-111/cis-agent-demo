@@ -34,6 +34,7 @@ class LlmClient:
         self.api_key = os.getenv("LLM_API_KEY", "")
         self.base_url = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/")
         self.model = os.getenv("LLM_MODEL", "gpt-4o-mini")
+        self.timeout = self._float_env("LLM_TIMEOUT", 120.0)
 
     @property
     def is_available(self) -> bool:
@@ -46,6 +47,7 @@ class LlmClient:
             "base_url_configured": bool(self.base_url),
             "api_key_configured": bool(self.api_key),
             "llm_enabled": self.is_available,
+            "llm_timeout_seconds": self.timeout,
             "last_check_status": last_check_status,
             "last_error": self._sanitize_error(last_error),
             "suggested_action": self._suggested_action(last_check_status, last_error),
@@ -62,7 +64,7 @@ class LlmClient:
         result["llm_response_preview"] = response.response_preview
         return result
 
-    def chat_json(self, messages: list[dict[str, str]], timeout: float = 90.0) -> LlmResponse:
+    def chat_json(self, messages: list[dict[str, str]], timeout: float | None = None) -> LlmResponse:
         if not self.api_key:
             return LlmResponse(
                 available=False,
@@ -75,6 +77,7 @@ class LlmClient:
 
         start = perf_counter()
         try:
+            effective_timeout = timeout if timeout is not None else self.timeout
             request_json = {
                 "model": self.model,
                 "messages": messages,
@@ -87,7 +90,7 @@ class LlmClient:
                     "Content-Type": "application/json",
                 },
                 json=request_json,
-                timeout=timeout,
+                timeout=effective_timeout,
             )
             response.raise_for_status()
             payload: dict[str, Any] = response.json()
@@ -126,6 +129,17 @@ class LlmClient:
         if not error:
             return error
         return error.replace(os.getenv("LLM_API_KEY", ""), "***") if os.getenv("LLM_API_KEY") else error
+
+    @staticmethod
+    def _float_env(name: str, default: float) -> float:
+        value = os.getenv(name)
+        if not value:
+            return default
+        try:
+            parsed = float(value)
+        except ValueError:
+            return default
+        return parsed if parsed > 0 else default
 
     def _suggested_action(self, status: str, error: str | None) -> str:
         if not self.api_key:

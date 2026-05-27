@@ -150,7 +150,7 @@ class AnalystAgent:
             positioning = (
                 "Evidence is insufficient for a confident conclusion."
                 if insufficient
-                else f"{competitor} positioning is inferred only from its own public evidence: {self._compact(competitor_evidence[0].snippet)}"
+                else f"{competitor} positioning is inferred only from its own public evidence: {self._compact(self._evidence_text(competitor_evidence[0]))}"
             )
 
             competitor_analysis[competitor] = {
@@ -203,6 +203,7 @@ class AnalystAgent:
                 "all_evidence_count_by_competitor": {
                     competitor: len(records) for competitor, records in all_evidence_by_competitor.items()
                 },
+                "content_source_used": self._content_source_summary(usable_evidence),
             }
         )
         profile = ProductProfile(
@@ -313,20 +314,30 @@ class AnalystAgent:
     def _compact(text: str) -> str:
         return text[:120].replace("\n", " ")
 
+    @staticmethod
+    def _evidence_text(item: Evidence) -> str:
+        return item.content_excerpt or item.snippet
+
+    @staticmethod
+    def _content_source_summary(evidence: list[Evidence]) -> dict[str, int]:
+        return {
+            "page_excerpt": sum(1 for item in evidence if item.content_excerpt),
+            "snippet": sum(1 for item in evidence if not item.content_excerpt),
+        }
+
     def _feature_hits(self, evidence: list[Evidence]) -> dict[str, list[Evidence]]:
         hits: dict[str, list[Evidence]] = defaultdict(list)
         for item in evidence:
-            text = item.snippet.lower()
+            text = self._evidence_text(item).lower()
             for feature, keywords in FEATURE_KEYWORDS.items():
                 if any(keyword.lower() in text for keyword in keywords):
                     hits[feature].append(item)
         return dict(hits)
 
-    @staticmethod
-    def _keyword_evidence(evidence: list[Evidence], keywords: list[str]) -> list[Evidence]:
+    def _keyword_evidence(self, evidence: list[Evidence], keywords: list[str]) -> list[Evidence]:
         matched = []
         for item in evidence:
-            text = f"{item.snippet} {item.url or ''}".lower()
+            text = f"{self._evidence_text(item)} {item.url or ''}".lower()
             if any(keyword.lower() in text for keyword in keywords):
                 matched.append(item)
         return matched
@@ -334,7 +345,7 @@ class AnalystAgent:
     def _persona_hits(self, evidence: list[Evidence]) -> dict[str, list[Evidence]]:
         hits: dict[str, list[Evidence]] = defaultdict(list)
         for item in evidence:
-            text = item.snippet.lower()
+            text = self._evidence_text(item).lower()
             for persona, keywords in PERSONA_KEYWORDS.items():
                 if any(keyword.lower() in text for keyword in keywords):
                     hits[persona].append(item)
@@ -355,11 +366,10 @@ class AnalystAgent:
             return "Evidence is insufficient for a confident pricing conclusion."
         return "Public evidence includes pricing/plan/subscription/enterprise signals; official pages should be used for final validation."
 
-    @staticmethod
-    def _pricing_tiers(evidence: list[Evidence]) -> list[str]:
+    def _pricing_tiers(self, evidence: list[Evidence]) -> list[str]:
         if not evidence:
             return ["Evidence is insufficient"]
         return [
-            "free/trial signal" if any(word in item.snippet.lower() for word in ["free", "trial", "免费", "试用"]) else "paid/enterprise signal"
+            "free/trial signal" if any(word in self._evidence_text(item).lower() for word in ["free", "trial", "免费", "试用"]) else "paid/enterprise signal"
             for item in evidence[:3]
         ]
