@@ -20,12 +20,17 @@ from app.agents.runner_factory import resolve_workflow_engine
 from app.database import Base
 from app.schemas import (
     AgentMessage,
+    AnalysisDimension,
+    AnalysisDimensionPlan,
     AnalystInput,
     AnalystOutput,
     Claim,
+    ClaimSupportResult,
+    Chunk,
     CollectorInput,
     CollectorOutput,
     CreateTaskRequest,
+    DimensionResult,
     Evidence,
     FinalReportInput,
     FinalReportOutput,
@@ -34,10 +39,13 @@ from app.schemas import (
     QaInput,
     QaResult,
     QaOutput,
+    RetrievalResult,
     Report,
     ReportWriterInput,
     ReportWriterOutput,
     ReworkInstruction,
+    SurveyEvidence,
+    WorkflowState,
 )
 from app.services.llm_client import LlmResponse
 from app.services.page_fetcher import PageFetchResult, PageFetcher
@@ -121,6 +129,181 @@ def test_agent_message_requires_trace_and_task_id():
             schema_name="Dag",
             payload={},
         )
+
+
+def test_public_contract_agent_names_are_reserved():
+    message = AgentMessage(
+        trace_id="trace_1",
+        task_id="task_1",
+        from_agent="Retriever",
+        to_agent="SurveyAgent",
+        message_type="evidence",
+        schema_name="RetrievalResult",
+        payload={},
+    )
+    assert message.from_agent == "Retriever"
+    assert message.to_agent == "SurveyAgent"
+
+
+def test_public_contract_analysis_dimension_validates():
+    dimension = AnalysisDimension(
+        dimension_id="pricing",
+        label="Pricing",
+        description="Pricing and packaging signals",
+        keywords=["pricing", "plan"],
+        required=True,
+        priority=1,
+        metadata={"owner": "planner"},
+    )
+    assert dimension.dimension_id == "pricing"
+    assert dimension.metadata["owner"] == "planner"
+
+
+def test_public_contract_analysis_dimension_plan_validates():
+    plan = AnalysisDimensionPlan(
+        selected_dimensions=["pricing"],
+        dimension_plans=[
+            AnalysisDimension(
+                dimension_id="pricing",
+                label="Pricing",
+                keywords=["pricing"],
+                required=True,
+                priority=1,
+            )
+        ],
+        research_goals=["Find pricing signals."],
+        query_hints={"AlphaCI": ["AlphaCI pricing official"]},
+    )
+    assert plan.selected_dimensions == ["pricing"]
+    assert plan.query_hints["AlphaCI"]
+
+
+def test_public_contract_dimension_result_requires_evidence_or_insufficient_flag():
+    result = DimensionResult(
+        dimension_id="pricing",
+        competitor="AlphaCI",
+        summary="Pricing evidence is insufficient.",
+        findings=[],
+        evidence_ids=[],
+        confidence=0.3,
+        insufficient_evidence=True,
+    )
+    assert result.insufficient_evidence is True
+    with pytest.raises(ValidationError):
+        DimensionResult(
+            dimension_id="pricing",
+            competitor="AlphaCI",
+            summary="Unsupported pricing conclusion.",
+            findings=[],
+            evidence_ids=[],
+            confidence=0.8,
+            insufficient_evidence=False,
+        )
+
+
+def test_public_contract_chunk_requires_run_evidence_and_competitor():
+    chunk = Chunk(
+        run_id="run_1",
+        evidence_id="ev_1",
+        competitor="AlphaCI",
+        source_url="https://alpha.example.com",
+        source_domain="alpha.example.com",
+        text="AlphaCI pricing content excerpt.",
+    )
+    assert chunk.run_id == "run_1"
+    assert chunk.evidence_id == "ev_1"
+    assert chunk.competitor == "AlphaCI"
+
+
+def test_public_contract_retrieval_result_requires_citation_metadata():
+    result = RetrievalResult(
+        chunk_id="chunk_1",
+        evidence_id="ev_1",
+        run_id="run_1",
+        competitor="AlphaCI",
+        text="Retrieved pricing chunk.",
+        score=0.82,
+        citation_metadata={"source_domain": "alpha.example.com", "relevance_level": "high"},
+    )
+    assert result.citation_metadata["source_domain"] == "alpha.example.com"
+
+
+def test_public_contract_survey_evidence_requires_run_sample_and_mock_flag():
+    survey = SurveyEvidence(
+        survey_id="survey_1",
+        run_id="run_1",
+        competitor="AlphaCI",
+        question_ids=["q_1", "q_2"],
+        sample_size=12,
+        is_mock=True,
+        snippet="Aggregated mock survey summary.",
+        confidence=0.65,
+    )
+    assert survey.run_id == "run_1"
+    assert survey.sample_size == 12
+    assert survey.is_mock is True
+
+
+def test_public_contract_workflow_state_accepts_reserved_fields():
+    retrieval = RetrievalResult(
+        chunk_id="chunk_1",
+        evidence_id="ev_1",
+        run_id="run_1",
+        competitor="AlphaCI",
+        text="Retrieved chunk.",
+        score=0.8,
+        citation_metadata={"source_domain": "alpha.example.com"},
+    )
+    state: WorkflowState = {
+        "task_id": "task_1",
+        "run_id": "run_1",
+        "selected_dimensions": ["pricing"],
+        "analysis_dimension_plan": AnalysisDimensionPlan(selected_dimensions=["pricing"]),
+        "dimension_results": [
+            DimensionResult(
+                dimension_id="pricing",
+                competitor="AlphaCI",
+                summary="Pricing evidence exists.",
+                findings=["Pricing page found."],
+                evidence_ids=["ev_1"],
+                confidence=0.8,
+            )
+        ],
+        "survey_evidence": [
+            SurveyEvidence(
+                survey_id="survey_1",
+                run_id="run_1",
+                competitor="AlphaCI",
+                question_ids=["q_1"],
+                sample_size=1,
+                is_mock=True,
+                snippet="Mock survey summary.",
+                confidence=0.5,
+            )
+        ],
+        "chunks": [
+            Chunk(
+                chunk_id="chunk_1",
+                run_id="run_1",
+                evidence_id="ev_1",
+                competitor="AlphaCI",
+                text="Chunk text.",
+            )
+        ],
+        "retrieval_results": [retrieval],
+        "claim_support_results": [
+            ClaimSupportResult(
+                claim_id="claim_1",
+                supported=True,
+                support_score=0.8,
+                retrieval_results=[retrieval],
+                reason="Chunk supports claim.",
+            )
+        ],
+        "rework_context": None,
+    }
+    assert state["selected_dimensions"] == ["pricing"]
+    assert state["retrieval_results"][0].citation_metadata
 
 
 def test_each_agent_run_uses_input_output_schema(db_session):

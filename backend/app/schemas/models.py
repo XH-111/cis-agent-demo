@@ -11,10 +11,16 @@ AgentName = Literal[
     "PlannerAgent",
     "CollectorAgent",
     "PageFetcher",
+    "Chunker",
+    "Indexer",
+    "Retriever",
     "AnalystAgent",
     "ReportWriterAgent",
     "QaAgent",
+    "SurveyAgent",
+    "QuestionnaireAgent",
     "EvidenceGate",
+    "HumanReviewAgent",
     "FinalReport",
     "FinalReportAgent",
     "WorkflowEngine",
@@ -129,6 +135,107 @@ class Claim(BaseModel):
     category: Literal["positioning", "feature", "pricing", "persona", "risk", "recommendation"]
     evidence_ids: list[str] = Field(min_length=1)
     confidence: float = Field(ge=0, le=1)
+
+
+class AnalysisDimension(BaseModel):
+    dimension_id: str = Field(min_length=1)
+    label: str = Field(min_length=1)
+    description: str = ""
+    keywords: list[str] = Field(default_factory=list)
+    required: bool = False
+    priority: int = Field(default=0, ge=0)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AnalysisDimensionPlan(BaseModel):
+    selected_dimensions: list[str] = Field(default_factory=list)
+    dimension_plans: list[AnalysisDimension] = Field(default_factory=list)
+    research_goals: list[str] = Field(default_factory=list)
+    query_hints: dict[str, list[str]] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class DimensionResult(BaseModel):
+    dimension_id: str = Field(min_length=1)
+    competitor: str | None = None
+    summary: str = Field(min_length=1)
+    findings: list[str] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(default_factory=list)
+    confidence: float = Field(ge=0, le=1)
+    insufficient_evidence: bool = False
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def require_evidence_or_insufficient_flag(self) -> "DimensionResult":
+        if not self.evidence_ids and not self.insufficient_evidence:
+            raise ValueError("DimensionResult requires evidence_ids unless insufficient_evidence=true")
+        return self
+
+
+class Chunk(BaseModel):
+    chunk_id: str = Field(default_factory=lambda: f"chunk_{uuid4().hex[:10]}")
+    run_id: str = Field(min_length=1)
+    evidence_id: str = Field(min_length=1)
+    competitor: str = Field(min_length=1)
+    source_url: str | None = None
+    source_domain: str | None = None
+    text: str = Field(min_length=1)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class RetrievalResult(BaseModel):
+    chunk_id: str = Field(min_length=1)
+    evidence_id: str = Field(min_length=1)
+    run_id: str = Field(min_length=1)
+    competitor: str = Field(min_length=1)
+    text: str = Field(min_length=1)
+    score: float = Field(ge=0, le=1)
+    citation_metadata: dict[str, Any]
+
+
+class ClaimSupportResult(BaseModel):
+    claim_id: str = Field(min_length=1)
+    supported: bool
+    support_score: float = Field(ge=0, le=1)
+    retrieval_results: list[RetrievalResult] = Field(default_factory=list)
+    reason: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SurveyEvidence(BaseModel):
+    survey_id: str = Field(min_length=1)
+    run_id: str = Field(min_length=1)
+    competitor: str | None = None
+    question_ids: list[str] = Field(default_factory=list)
+    sample_size: int = Field(ge=0)
+    is_mock: bool
+    snippet: str = Field(min_length=1)
+    confidence: float = Field(ge=0, le=1)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class RouteInstruction(BaseModel):
+    route_to: AgentName | None = None
+    error_type: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+    target_agent: AgentName | None = None
+    related_competitor: str | None = None
+    related_claim_id: str | None = None
+    related_evidence_id: str | None = None
+    suggested_action: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ReworkContext(BaseModel):
+    route_to: AgentName | None = None
+    error_type: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+    target_agent: AgentName | None = None
+    related_competitor: str | None = None
+    related_claim_id: str | None = None
+    related_evidence_id: str | None = None
+    suggested_action: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class AgentMessage(BaseModel):

@@ -8,7 +8,20 @@ from app.schemas.agent_io import (
     QaOutput,
     ReportWriterOutput,
 )
-from app.schemas.models import Evidence, QaResult, Report, Task, TaskRun
+from app.schemas.models import (
+    AnalysisDimensionPlan,
+    Chunk,
+    ClaimSupportResult,
+    DimensionResult,
+    Evidence,
+    QaResult,
+    Report,
+    RetrievalResult,
+    ReworkContext,
+    SurveyEvidence,
+    Task,
+    TaskRun,
+)
 
 
 WorkflowEngine = Literal["custom", "langgraph"]
@@ -47,6 +60,14 @@ class WorkflowState(TypedDict, total=False):
     evidence_gate_output: dict[str, Any]
     page_fetch_output: dict[str, Any]
     evidence: list[Evidence]
+    selected_dimensions: list[str]
+    analysis_dimension_plan: AnalysisDimensionPlan | None
+    dimension_results: list[DimensionResult]
+    survey_evidence: list[SurveyEvidence]
+    chunks: list[Chunk]
+    retrieval_results: list[RetrievalResult]
+    claim_support_results: list[ClaimSupportResult]
+    rework_context: ReworkContext | None
     report: Report | None
     qa_result: QaResult | None
     route_to: str | None
