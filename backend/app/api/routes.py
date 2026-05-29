@@ -108,6 +108,9 @@ def run_task(
         result["workflow_summary"] = {
             "workflow_engine_requested": workflow_engine or "env/default",
             "workflow_engine_used": "custom",
+            "intent_classification": result["plan"].intent_classification if result.get("plan") else None,
+            "survey_needed": result["plan"].survey_needed if result.get("plan") else False,
+            "selected_dimensions": result["plan"].selected_dimensions if result.get("plan") else [],
             "node_sequence": ["planner", "collector", "analyst", "report_writer", "qa"] + (["final_report"] if result.get("report") else []),
             "conditional_routes_taken": [],
             "rework_count": result["qa_result"].rework_count if result.get("qa_result") else 0,

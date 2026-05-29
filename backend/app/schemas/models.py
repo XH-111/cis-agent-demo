@@ -155,6 +155,52 @@ class AnalysisDimensionPlan(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+PlannerIntentLabel = Literal[
+    "competitive_analysis",
+    "product_positioning",
+    "feature_comparison",
+    "ux_review",
+    "improvement_opportunity",
+    "survey_design",
+    "survey_analysis",
+    "market_research",
+    "unknown",
+]
+
+
+class PlannerExtractedContext(BaseModel):
+    intent_classification: PlannerIntentLabel = "competitive_analysis"
+    industry: str | None = None
+    domain: str | None = None
+    product_name: str | None = None
+    product_type: str | None = None
+    target_users: list[str] = Field(default_factory=list)
+    region: str | None = None
+    competitors_mentioned: list[str] = Field(default_factory=list)
+    analysis_focus_points: list[str] = Field(default_factory=list)
+    requested_outputs: list[str] = Field(default_factory=list)
+    survey_needed: bool = False
+    survey_reason: str | None = None
+    missing_information: list[str] = Field(default_factory=list)
+    confidence: float = Field(default=0.0, ge=0, le=1)
+
+
+class PlannerSurveyInput(BaseModel):
+    objective: str | None = None
+    respondent_type: str | None = None
+    question_themes: list[str] = Field(default_factory=list)
+    hypotheses: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class PlannerDownstreamGuidance(BaseModel):
+    collector: list[str] = Field(default_factory=list)
+    analyst: list[str] = Field(default_factory=list)
+    writer: list[str] = Field(default_factory=list)
+    qa: list[str] = Field(default_factory=list)
+    survey: list[str] = Field(default_factory=list)
+
+
 class DimensionResult(BaseModel):
     dimension_id: str = Field(min_length=1)
     competitor: str | None = None

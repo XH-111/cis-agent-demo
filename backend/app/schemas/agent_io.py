@@ -2,7 +2,21 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from app.schemas.models import Dag, Evidence, FeatureTree, PricingModel, ProductProfile, QaResult, Report, Task, UserPersona
+from app.schemas.models import (
+    AnalysisDimensionPlan,
+    Dag,
+    Evidence,
+    FeatureTree,
+    PlannerDownstreamGuidance,
+    PlannerExtractedContext,
+    PlannerSurveyInput,
+    PricingModel,
+    ProductProfile,
+    QaResult,
+    Report,
+    Task,
+    UserPersona,
+)
 
 
 DemoMode = Literal["normal", "qa_missing_evidence", "qa_invalid_extraction", "qa_bad_report"]
@@ -17,6 +31,19 @@ class PlannerInput(BaseModel):
 class PlannerOutput(BaseModel):
     dag: Dag
     plan: list[str] = Field(min_length=1)
+    intent_summary: str | None = None
+    intent_classification: str = "competitive_analysis"
+    extracted_context: PlannerExtractedContext | None = None
+    selected_dimensions: list[str] = Field(default_factory=list)
+    analysis_dimension_plan: AnalysisDimensionPlan | None = None
+    survey_needed: bool = False
+    survey_objective: str | None = None
+    survey_inputs: PlannerSurveyInput | None = None
+    missing_information: list[str] = Field(default_factory=list)
+    planner_notes: list[str] = Field(default_factory=list)
+    confidence: float = Field(default=0.0, ge=0, le=1)
+    downstream_guidance: PlannerDownstreamGuidance | None = None
+    diagnostics: dict = Field(default_factory=dict)
 
 
 class CollectorInput(BaseModel):

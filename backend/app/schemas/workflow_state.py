@@ -14,6 +14,8 @@ from app.schemas.models import (
     ClaimSupportResult,
     DimensionResult,
     Evidence,
+    PlannerExtractedContext,
+    PlannerSurveyInput,
     QaResult,
     Report,
     RetrievalResult,
@@ -60,8 +62,16 @@ class WorkflowState(TypedDict, total=False):
     evidence_gate_output: dict[str, Any]
     page_fetch_output: dict[str, Any]
     evidence: list[Evidence]
+    intent_summary: str | None
+    intent_classification: str | None
+    extracted_context: PlannerExtractedContext | None
     selected_dimensions: list[str]
     analysis_dimension_plan: AnalysisDimensionPlan | None
+    survey_needed: bool
+    survey_objective: str | None
+    survey_inputs: PlannerSurveyInput | None
+    planner_notes: list[str]
+    planner_confidence: float | None
     dimension_results: list[DimensionResult]
     survey_evidence: list[SurveyEvidence]
     chunks: list[Chunk]

@@ -101,6 +101,22 @@ class LangGraphWorkflowRunner:
             "evidence_gate_output": {},
             "page_fetch_output": {},
             "evidence": [],
+            "intent_summary": None,
+            "intent_classification": None,
+            "extracted_context": None,
+            "selected_dimensions": [],
+            "analysis_dimension_plan": None,
+            "survey_needed": False,
+            "survey_objective": None,
+            "survey_inputs": None,
+            "planner_notes": [],
+            "planner_confidence": None,
+            "dimension_results": [],
+            "survey_evidence": [],
+            "chunks": [],
+            "retrieval_results": [],
+            "claim_support_results": [],
+            "rework_context": None,
             "report": None,
             "qa_result": None,
             "route_to": None,
@@ -186,7 +202,21 @@ class LangGraphWorkflowRunner:
     def planner_node(self, state: WorkflowState) -> WorkflowState:
         task = state["task"]
         output = self.planner.run(PlannerInput(task=task, run_id=state.get("run_id"), retry_count=state["rework_count"]))
-        return {**state, "planner_output": output, "node_sequence": [*state["node_sequence"], "planner"]}
+        return {
+            **state,
+            "planner_output": output,
+            "intent_summary": output.intent_summary,
+            "intent_classification": output.intent_classification,
+            "extracted_context": output.extracted_context,
+            "selected_dimensions": output.selected_dimensions,
+            "analysis_dimension_plan": output.analysis_dimension_plan,
+            "survey_needed": output.survey_needed,
+            "survey_objective": output.survey_objective,
+            "survey_inputs": output.survey_inputs,
+            "planner_notes": output.planner_notes,
+            "planner_confidence": output.confidence,
+            "node_sequence": [*state["node_sequence"], "planner"],
+        }
 
     def collector_node(self, state: WorkflowState) -> WorkflowState:
         task = self._current_task(state)
@@ -507,6 +537,9 @@ class LangGraphWorkflowRunner:
             "task_id": state.get("task_id"),
             "workflow_engine_requested": state.get("workflow_engine_requested"),
             "workflow_engine_used": "langgraph",
+            "intent_classification": state.get("intent_classification"),
+            "survey_needed": state.get("survey_needed"),
+            "selected_dimensions": state.get("selected_dimensions", []),
             "node_sequence": state.get("node_sequence", []),
             "conditional_routes_taken": state.get("conditional_routes_taken", []),
             "evidence_gate_output": state.get("evidence_gate_output", {}),
