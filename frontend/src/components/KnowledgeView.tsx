@@ -1,5 +1,5 @@
 import { Database } from "lucide-react";
-import type { Evidence, Report } from "../types";
+import type { Evidence, Report, SwotAnalysis, SwotItem } from "../types";
 
 export function KnowledgeView({
   report,
@@ -12,10 +12,19 @@ export function KnowledgeView({
 }) {
   const knowledge = report?.json_report.knowledge;
   if (!knowledge) return null;
+
+  const swot = report?.json_report.swot;
   const evidenceById = new Map((evidence ?? []).map((item) => [item.evidence_id, item]));
+
   return (
     <section className="bg-white p-4">
-      <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold"><Database size={18} /> 竞品知识</h2>
+      <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold"><Database size={18} /> Knowledge</h2>
+      {swot && (
+        <div className="mb-3">
+          <div className="mb-2 text-sm font-semibold text-slate-700">Structured SWOT Summary</div>
+          <SwotPanel swot={swot} evidenceById={evidenceById} onEvidenceIdsSelect={onEvidenceIdsSelect} />
+        </div>
+      )}
       <div className="grid gap-3 md:grid-cols-2">
         {Object.entries(knowledge).map(([key, value]) => {
           const evidenceIds = extractEvidenceIds(value);
@@ -23,7 +32,7 @@ export function KnowledgeView({
           return (
             <div key={key} className={`rounded border p-3 ${insufficient ? "border-amber-300 bg-amber-50" : "border-line bg-panel"}`}>
               <div className="mb-2 text-sm font-semibold">{key}</div>
-              {insufficient && <div className="mb-2 rounded border border-amber-300 bg-white px-2 py-1 text-xs text-warning">证据不足，建议补充更多公开来源。</div>}
+              {insufficient && <div className="mb-2 rounded border border-amber-300 bg-white px-2 py-1 text-xs text-warning">Evidence is still insufficient for a strong conclusion.</div>}
               {evidenceIds.length > 0 && (
                 <div className="mb-2 flex flex-wrap gap-1 text-xs">
                   {evidenceIds.map((id) => (
@@ -47,8 +56,75 @@ export function KnowledgeView({
   );
 }
 
+function SwotPanel({
+  swot,
+  evidenceById,
+  onEvidenceIdsSelect,
+}: {
+  swot: SwotAnalysis;
+  evidenceById: Map<string, Evidence>;
+  onEvidenceIdsSelect?: (ids: string[]) => void;
+}) {
+  const sections: Array<{ key: keyof SwotAnalysis; label: string }> = [
+    { key: "strengths", label: "SWOT Strengths" },
+    { key: "weaknesses", label: "SWOT Weaknesses" },
+    { key: "opportunities", label: "SWOT Opportunities" },
+    { key: "threats", label: "SWOT Threats" },
+  ];
+
+  return (
+    <div className="mb-3 grid gap-3 md:grid-cols-2">
+      {sections.map(({ key, label }) => (
+        <div key={key} className="rounded border border-line bg-panel p-3">
+          <div className="mb-2 text-sm font-semibold">{label}</div>
+          <div className="space-y-2">
+            {swot[key].map((item, index) => (
+              <SwotCard
+                key={`${key}-${item.competitor ?? "overall"}-${index}`}
+                item={item}
+                evidenceById={evidenceById}
+                onEvidenceIdsSelect={onEvidenceIdsSelect}
+              />
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function SwotCard({
+  item,
+  evidenceById,
+  onEvidenceIdsSelect,
+}: {
+  item: SwotItem;
+  evidenceById: Map<string, Evidence>;
+  onEvidenceIdsSelect?: (ids: string[]) => void;
+}) {
+  return (
+    <div className="rounded border border-line bg-white p-3 text-xs leading-5">
+      <div className="font-semibold">{item.competitor ?? "overall"} · {Math.round(item.confidence * 100)}%</div>
+      <div className="mt-1">{item.summary}</div>
+      <div className="mt-2 flex flex-wrap gap-1">
+        {item.evidence_ids.map((id) => (
+          <button
+            key={id}
+            className="rounded border border-line bg-panel px-2 py-0.5 text-slate-700 hover:border-accent"
+            onClick={() => onEvidenceIdsSelect?.([id])}
+            title={evidenceById.get(id)?.source_domain ?? id}
+          >
+            {id}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function extractEvidenceIds(value: unknown): string[] {
   const ids = new Set<string>();
+
   function walk(item: unknown) {
     if (Array.isArray(item)) {
       item.forEach(walk);
@@ -66,6 +142,7 @@ function extractEvidenceIds(value: unknown): string[] {
       }
     }
   }
+
   walk(value);
   return Array.from(ids);
 }

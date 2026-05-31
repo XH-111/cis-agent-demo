@@ -64,6 +64,20 @@ export type Claim = {
   confidence: number;
 };
 
+export type SwotItem = {
+  summary: string;
+  competitor?: string | null;
+  evidence_ids: string[];
+  confidence: number;
+};
+
+export type SwotAnalysis = {
+  strengths: SwotItem[];
+  weaknesses: SwotItem[];
+  opportunities: SwotItem[];
+  threats: SwotItem[];
+};
+
 export type Report = {
   report_id: string;
   task_id: string;
@@ -71,6 +85,12 @@ export type Report = {
   markdown: string;
   json_report: {
     knowledge?: Record<string, unknown>;
+    swot?: SwotAnalysis;
+    planner?: {
+      intent_classification?: string | null;
+      selected_dimensions?: string[];
+      writer_guidance?: string[];
+    };
     claims?: Claim[];
     writer_diagnostics?: WriterDiagnostics;
   };
@@ -94,6 +114,9 @@ export type WriterDiagnostics = {
   llm_response_preview?: string;
   fallback_used?: boolean;
   llm_fallback_reason?: string;
+  selected_dimensions?: string[];
+  writer_guidance_count?: number;
+  intent_classification?: string | null;
 };
 
 export type LlmStatus = {
@@ -131,6 +154,12 @@ export type WorkflowSummary = {
   task_id?: string;
   workflow_engine_requested?: string;
   workflow_engine_used?: string;
+  intent_classification?: string | null;
+  ambiguity_level?: string | null;
+  scope_type?: string | null;
+  scope_size?: string | null;
+  survey_needed?: boolean;
+  survey_recommended?: boolean;
   node_sequence?: string[];
   conditional_routes_taken?: Array<{ from_node?: string; to_node?: string; reason?: string; rework_count?: number; final_status?: string }>;
   rework_count?: number;
@@ -147,6 +176,29 @@ export type WorkflowSummary = {
     suggested_route?: string | null;
     suggested_action?: string;
   };
+  selected_dimensions?: string[];
+  recommended_next_constraints?: string[];
+  clarification_targets?: string[];
+  candidate_competitors?: Array<{
+    name?: string;
+    confidence?: number;
+    rationale?: string;
+    source?: string;
+  }>;
+  planning_stages?: Array<{
+    stage_id?: string;
+    label?: string;
+    description?: string;
+    status?: string;
+  }>;
+  downstream_guidance?: {
+    collector?: string[];
+    analyst?: string[];
+    writer?: string[];
+    qa?: string[];
+    survey?: string[];
+  } | null;
+  swot_analysis?: SwotAnalysis | null;
   page_fetch_output?: {
     page_fetch_provider?: string;
     page_fetch_attempted?: boolean;
@@ -174,6 +226,13 @@ export type CollectorDiagnostics = {
   fallback_used?: boolean;
   fallback_reason?: string;
   elapsed_time_ms?: number;
+  planner_query_hints_used?: boolean;
+  targeted_recollection_used?: boolean;
+  planner_hint_query_count_by_competitor?: Record<string, number>;
+  targeted_query_count_by_competitor?: Record<string, number>;
+  effective_query_count_by_competitor?: Record<string, number>;
+  effective_queries_preview_by_competitor?: Record<string, string[]>;
+  targeted_queries_preview_by_competitor?: Record<string, string[]>;
 };
 
 export type QaResult = {
@@ -190,6 +249,7 @@ export type QaResult = {
     claim_id?: string;
     failed_claim?: string;
     failed_schema?: string;
+    metadata?: Record<string, unknown>;
   }>;
   rework_history: Array<{
     round: number;
@@ -201,6 +261,23 @@ export type QaResult = {
   }>;
   route_to?: string;
   rework_count: number;
+  metadata?: {
+    swot_validation?: {
+      status?: string;
+      issue_count?: number;
+      issues?: Array<{
+        error_type?: string;
+        target_agent?: string;
+        competitor?: string | null;
+        quadrant?: string | null;
+        fix_type?: string;
+        reason?: string;
+        suggested_action?: string;
+        query_focus?: string[];
+        focus_dimensions?: string[];
+      }>;
+    };
+  };
 };
 
 export type TraceRecord = {

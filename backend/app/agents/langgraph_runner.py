@@ -19,6 +19,7 @@ from app.schemas import (
     PlannerInput,
     QaInput,
     QaResult,
+    ReworkContext,
     ReportWriterInput,
     ReworkInstruction,
     ReworkHistoryItem,
@@ -103,12 +104,25 @@ class LangGraphWorkflowRunner:
             "evidence": [],
             "intent_summary": None,
             "intent_classification": None,
+            "ambiguity_level": None,
+            "scope_type": None,
+            "scope_size": None,
             "extracted_context": None,
             "selected_dimensions": [],
             "analysis_dimension_plan": None,
+            "downstream_guidance": None,
             "survey_needed": False,
+            "survey_recommended": False,
             "survey_objective": None,
             "survey_inputs": None,
+            "confirmed_scope": None,
+            "inferred_scope": None,
+            "suggested_scope": None,
+            "recommended_next_constraints": [],
+            "assumptions": [],
+            "candidate_competitors": [],
+            "clarification_targets": [],
+            "planning_stages": [],
             "planner_notes": [],
             "planner_confidence": None,
             "dimension_results": [],
@@ -116,6 +130,7 @@ class LangGraphWorkflowRunner:
             "chunks": [],
             "retrieval_results": [],
             "claim_support_results": [],
+            "swot_analysis": None,
             "rework_context": None,
             "report": None,
             "qa_result": None,
@@ -207,12 +222,25 @@ class LangGraphWorkflowRunner:
             "planner_output": output,
             "intent_summary": output.intent_summary,
             "intent_classification": output.intent_classification,
+            "ambiguity_level": output.ambiguity_level,
+            "scope_type": output.scope_type,
+            "scope_size": output.scope_size,
             "extracted_context": output.extracted_context,
             "selected_dimensions": output.selected_dimensions,
             "analysis_dimension_plan": output.analysis_dimension_plan,
+            "downstream_guidance": output.downstream_guidance,
             "survey_needed": output.survey_needed,
+            "survey_recommended": output.survey_recommended,
             "survey_objective": output.survey_objective,
             "survey_inputs": output.survey_inputs,
+            "confirmed_scope": output.confirmed_scope,
+            "inferred_scope": output.inferred_scope,
+            "suggested_scope": output.suggested_scope,
+            "recommended_next_constraints": output.recommended_next_constraints,
+            "assumptions": output.assumptions,
+            "candidate_competitors": output.candidate_competitors,
+            "clarification_targets": output.clarification_targets,
+            "planning_stages": output.planning_stages,
             "planner_notes": output.planner_notes,
             "planner_confidence": output.confidence,
             "node_sequence": [*state["node_sequence"], "planner"],
@@ -222,13 +250,21 @@ class LangGraphWorkflowRunner:
         task = self._current_task(state)
         if state["demo_mode"] == "qa_missing_evidence" and state["rework_count"] == 0:
             return {**state, "task": task, "evidence": [], "collector_output": None, "node_sequence": [*state["node_sequence"], "collector"]}
+        planner_query_hints = (
+            state["analysis_dimension_plan"].query_hints if state.get("analysis_dimension_plan") is not None else {}
+        )
         output = self.collector.run(
             CollectorInput(
                 task=task,
                 run_id=state.get("run_id"),
                 retry_count=state["rework_count"],
                 collector_mode=state["collector_mode"],
-                gate_context=state.get("evidence_gate_output", {}),
+                planner_query_hints=planner_query_hints,
+                gate_context={
+                    **state.get("evidence_gate_output", {}),
+                    "rework_context": state.get("rework_context").model_dump(mode="json") if state.get("rework_context") else None,
+                    "targeted_recollection": self._targeted_recollection_summary(state.get("rework_context")),
+                },
             )
         )
         evidence = self.evidence_service.save_many(task.task_id, output.evidence, run_id=state.get("run_id"))
@@ -362,9 +398,17 @@ class LangGraphWorkflowRunner:
                 retry_count=state["rework_count"],
                 force_invalid_extraction=state["demo_mode"] == "qa_invalid_extraction" and state["rework_count"] == 0,
                 analyst_mode=state["analyst_mode"],
+                selected_dimensions=state.get("selected_dimensions", []),
+                rework_context=state.get("rework_context"),
             )
         )
-        return {**state, "task": task, "analyst_output": output, "node_sequence": [*state["node_sequence"], "analyst"]}
+        return {
+            **state,
+            "task": task,
+            "analyst_output": output,
+            "swot_analysis": output.swot,
+            "node_sequence": [*state["node_sequence"], "analyst"],
+        }
 
     def page_fetcher_node(self, state: WorkflowState) -> WorkflowState:
         task = self._current_task(state)
@@ -393,6 +437,9 @@ class LangGraphWorkflowRunner:
                 retry_count=state["rework_count"],
                 force_bad_format=state["demo_mode"] == "qa_bad_report" and state["rework_count"] == 0,
                 writer_mode=state["writer_mode"],
+                selected_dimensions=state.get("selected_dimensions", []),
+                writer_guidance=state.get("downstream_guidance").writer if state.get("downstream_guidance") else [],
+                intent_classification=state.get("intent_classification"),
             )
         )
         return {
@@ -423,6 +470,7 @@ class LangGraphWorkflowRunner:
             "task": task,
             "qa_output": output,
             "qa_result": qa_result,
+            "rework_context": self._rework_context_from_qa(qa_result),
             "route_to": qa_result.route_to,
             "rework_count": qa_result.rework_count,
             "node_sequence": [*state["node_sequence"], "qa"],
@@ -538,8 +586,27 @@ class LangGraphWorkflowRunner:
             "workflow_engine_requested": state.get("workflow_engine_requested"),
             "workflow_engine_used": "langgraph",
             "intent_classification": state.get("intent_classification"),
+            "ambiguity_level": state.get("ambiguity_level"),
+            "scope_type": state.get("scope_type"),
+            "scope_size": state.get("scope_size"),
             "survey_needed": state.get("survey_needed"),
+            "survey_recommended": state.get("survey_recommended"),
             "selected_dimensions": state.get("selected_dimensions", []),
+            "downstream_guidance": state.get("downstream_guidance").model_dump(mode="json")
+            if state.get("downstream_guidance")
+            else None,
+            "swot_analysis": state.get("swot_analysis").model_dump(mode="json") if state.get("swot_analysis") else None,
+            "rework_context": state.get("rework_context").model_dump(mode="json") if state.get("rework_context") else None,
+            "swot_validation": state.get("qa_result").metadata.get("swot_validation")
+            if state.get("qa_result") and state.get("qa_result").metadata
+            else None,
+            "confirmed_scope": state.get("confirmed_scope").model_dump(mode="json") if state.get("confirmed_scope") else None,
+            "inferred_scope": state.get("inferred_scope").model_dump(mode="json") if state.get("inferred_scope") else None,
+            "suggested_scope": state.get("suggested_scope").model_dump(mode="json") if state.get("suggested_scope") else None,
+            "recommended_next_constraints": state.get("recommended_next_constraints", []),
+            "clarification_targets": state.get("clarification_targets", []),
+            "candidate_competitors": [item.model_dump(mode="json") for item in state.get("candidate_competitors", [])],
+            "planning_stages": [item.model_dump(mode="json") for item in state.get("planning_stages", [])],
             "node_sequence": state.get("node_sequence", []),
             "conditional_routes_taken": state.get("conditional_routes_taken", []),
             "evidence_gate_output": state.get("evidence_gate_output", {}),
@@ -564,6 +631,61 @@ class LangGraphWorkflowRunner:
         if final_status == "qa_failed":
             return "qa_failed"
         return "failed" if final_status in {"failed", None} else str(final_status)
+
+    @staticmethod
+    def _rework_context_from_qa(qa_result: QaResult | None) -> ReworkContext | None:
+        if qa_result is None or not qa_result.rework_instructions:
+            return None
+        instruction = qa_result.rework_instructions[0]
+        metadata = instruction.metadata or {}
+        route_to = qa_result.route_to if qa_result.route_to in {
+            "PlannerAgent",
+            "CollectorAgent",
+            "PageFetcher",
+            "Chunker",
+            "Indexer",
+            "Retriever",
+            "AnalystAgent",
+            "ReportWriterAgent",
+            "QaAgent",
+            "SurveyAgent",
+            "QuestionnaireAgent",
+            "EvidenceGate",
+            "HumanReviewAgent",
+            "FinalReport",
+            "FinalReportAgent",
+            "WorkflowEngine",
+        } else None
+        return ReworkContext(
+            route_to=route_to,
+            error_type=instruction.error_type,
+            reason=instruction.reason,
+            target_agent=instruction.target_agent,
+            related_competitor=metadata.get("competitor"),
+            related_claim_id=instruction.claim_id,
+            related_evidence_id=None,
+            suggested_action=instruction.suggested_action,
+            metadata=metadata,
+        )
+
+    @staticmethod
+    def _targeted_recollection_summary(rework_context: ReworkContext | None) -> dict:
+        if rework_context is None:
+            return {"by_competitor": {}}
+        competitor = rework_context.related_competitor
+        if not competitor:
+            return {"by_competitor": {}}
+        return {
+            "by_competitor": {
+                competitor: [
+                    {
+                        "error_type": rework_context.error_type,
+                        "reason": rework_context.reason,
+                        "metadata": rework_context.metadata,
+                    }
+                ]
+            }
+        }
 
     def _save_workflow_trace(self, task_id: str, run_id: str, summary: dict, elapsed_time_ms: int) -> None:
         self.trace_service.save(
