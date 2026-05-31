@@ -3,7 +3,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from app.agents.base import AgentExecutionError, AgentOutputValidationError, run_with_trace
-from app.schemas import Claim, QaResult, Report, ReportWriterInput, ReportWriterOutput
+from app.schemas import Claim, QaResult, Report, ReportWriterInput, ReportWriterOutput, SwotAnalysis, SwotItem
 from app.services.evidence_relevance_service import is_relevant_evidence
 from app.services.llm_client import LlmClient, parse_llm_json
 from app.services.trace_service import TraceService
@@ -24,7 +24,7 @@ class ReportWriterAgent:
                 if exc.fallback_to_mock:
                     return self._run_mock(input_data, fallback_reason=str(exc), previous_diagnostics=exc.output)
                 return ReportWriterOutput(
-                    draft_report=exc.output or {"claims": [], "markdown": "LLM ReportWriter output failed validation."},
+                    draft_report={"claims": [], "markdown": "LLM ReportWriter output failed validation."},
                     writer_mode="llm",
                     diagnostics=exc.output.get("diagnostics", {}) if isinstance(exc.output, dict) else {},
                 )
@@ -52,6 +52,9 @@ class ReportWriterAgent:
             "missing_claim_competitors": [],
             "fallback_used": False,
             "llm_fallback_reason": None,
+            "selected_dimensions": [item for item in input_data.selected_dimensions if item],
+            "writer_guidance_count": len(input_data.writer_guidance),
+            "intent_classification": input_data.intent_classification,
         }
 
     def _run_mock(
@@ -83,20 +86,7 @@ class ReportWriterAgent:
                 )
 
             claims = [Claim(**item) for item in raw_claims]
-            markdown = "\n".join(
-                [
-                    f"# Competitor Analysis Report: {task.product_name}",
-                    "",
-                    "## Executive Summary",
-                    f"{task.product_name} can differentiate through structured outputs, QA routing, and source-backed claims.",
-                    "",
-                    "## Key Claims",
-                    *[
-                        f"- **{claim.competitor or 'overall'} / {claim.claim_id}** {claim.text} Evidence: {', '.join(claim.evidence_ids)}"
-                        for claim in claims
-                    ],
-                ]
-            )
+            markdown = self._mock_markdown(input_data, claims)
             if input_data.force_bad_format:
                 markdown = "Competitor report without a level-1 heading\n\nThis content demonstrates QA report-format routing."
 
@@ -105,9 +95,13 @@ class ReportWriterAgent:
                 markdown=markdown,
                 json_report={
                     "knowledge": knowledge.model_dump(mode="json"),
+                    "swot": self._swot_payload(knowledge.swot),
                     "claims": [claim.model_dump(mode="json") for claim in claims],
-                    "competitor_coverage": self._coverage_diagnostics(task.competitors, [claim.model_dump(mode="json") for claim in claims]),
+                    "competitor_coverage": self._coverage_diagnostics(
+                        task.competitors, [claim.model_dump(mode="json") for claim in claims]
+                    ),
                     "writer_mode": "mock",
+                    "planner": self._planner_report_payload(input_data),
                     "llm_fallback_reason": fallback_reason,
                     "writer_diagnostics": diagnostics,
                 },
@@ -238,6 +232,7 @@ class ReportWriterAgent:
                     f"LLM output failed Claim schema validation: {exc}",
                     output={"claims": claims_payload, "markdown": payload.get("markdown_report", ""), "diagnostics": diagnostics},
                 ) from exc
+
             diagnostics.update(
                 {
                     "writer_mode_used": "llm",
@@ -252,9 +247,14 @@ class ReportWriterAgent:
                 markdown=payload.get("markdown_report", ""),
                 json_report={
                     **(payload.get("json_report") if isinstance(payload.get("json_report"), dict) else {}),
+                    "knowledge": input_data.knowledge.model_dump(mode="json"),
+                    "swot": self._swot_payload(input_data.knowledge.swot),
                     "claims": [claim.model_dump(mode="json") for claim in claims],
-                    "competitor_coverage": self._coverage_diagnostics(task.competitors, [claim.model_dump(mode="json") for claim in claims]),
+                    "competitor_coverage": self._coverage_diagnostics(
+                        task.competitors, [claim.model_dump(mode="json") for claim in claims]
+                    ),
                     "writer_mode": "llm",
+                    "planner": self._planner_report_payload(input_data),
                     "writer_diagnostics": diagnostics,
                 },
                 claims=claims,
@@ -284,28 +284,19 @@ class ReportWriterAgent:
         knowledge = input_data.knowledge
         claims = [Claim(**item) for item in self._mock_claim_payloads(input_data)]
         diagnostics.update(self._coverage_diagnostics(task.competitors, [claim.model_dump(mode="json") for claim in claims]))
-        markdown = "\n".join(
-            [
-                f"# Competitor Analysis Report: {task.product_name}",
-                "",
-                "## Executive Summary",
-                f"{task.product_name} can differentiate through structured outputs, QA routing, and source-backed claims.",
-                "",
-                "## Key Claims",
-                *[
-                    f"- **{claim.competitor or 'overall'} / {claim.claim_id}** {claim.text} Evidence: {', '.join(claim.evidence_ids)}"
-                    for claim in claims
-                ],
-            ]
-        )
+        markdown = self._mock_markdown(input_data, claims)
         report = Report(
             task_id=task.task_id,
             markdown=markdown,
             json_report={
                 "knowledge": knowledge.model_dump(mode="json"),
+                "swot": self._swot_payload(knowledge.swot),
                 "claims": [claim.model_dump(mode="json") for claim in claims],
-                "competitor_coverage": self._coverage_diagnostics(task.competitors, [claim.model_dump(mode="json") for claim in claims]),
+                "competitor_coverage": self._coverage_diagnostics(
+                    task.competitors, [claim.model_dump(mode="json") for claim in claims]
+                ),
                 "writer_mode": "mock",
+                "planner": self._planner_report_payload(input_data),
                 "llm_fallback_reason": fallback_reason,
                 "writer_diagnostics": diagnostics,
             },
@@ -334,6 +325,8 @@ class ReportWriterAgent:
 
     def _mock_claim_payloads(self, input_data: ReportWriterInput) -> list[dict[str, Any]]:
         grouped = self._evidence_ids_by_competitor(input_data)
+        dimensions = self._selected_dimensions(input_data)
+        preferred_category = self._preferred_claim_category(dimensions)
         claims: list[dict[str, Any]] = []
         for index, competitor in enumerate(input_data.task.competitors, start=1):
             ids = grouped.get(competitor, [])
@@ -343,8 +336,8 @@ class ReportWriterAgent:
                 {
                     "claim_id": f"claim_{index:03d}",
                     "competitor": competitor,
-                    "text": f"{competitor} is evaluated only with high/medium relevance evidence; current public evidence supports a cautious competitor-specific conclusion.",
-                    "category": "positioning",
+                    "text": self._claim_text(competitor, dimensions),
+                    "category": preferred_category,
                     "evidence_ids": [] if input_data.simulate_missing_evidence and index == 1 else ids[:2],
                     "confidence": 0.82,
                 }
@@ -355,7 +348,7 @@ class ReportWriterAgent:
                 {
                     "claim_id": "claim_001",
                     "competitor": None,
-                    "text": "当前公开证据不足，暂不做强结论。",
+                    "text": "Current public evidence is insufficient, so the report avoids strong competitor claims.",
                     "category": "risk",
                     "evidence_ids": [] if input_data.simulate_missing_evidence else ids,
                     "confidence": 0.55,
@@ -380,44 +373,119 @@ class ReportWriterAgent:
             "task": input_data.task.model_dump(mode="json"),
             "knowledge": input_data.knowledge.model_dump(mode="json"),
             "evidence": [item.model_dump(mode="json") for item in input_data.evidence],
+            "planner": self._planner_report_payload(input_data),
         }
         system = (
             "You are ReportWriterAgent. Write only from supplied Evidence and Knowledge. "
             "Do not invent sources. Every key claim must bind evidence_ids. "
-            "The markdown_report should target 1800-2200 Chinese characters when evidence coverage is sufficient. "
-            "Do not pad with unsupported facts. If evidence is insufficient, the report may be shorter, but must explain the evidence gaps, uncertainty, and next validation steps. "
-            "Structure markdown_report with these sections: "
-            "# 竞品分析报告; ## 1. 执行摘要; ## 2. 分析范围与证据说明; ## 3. 竞品概览; "
-            "## 4. 功能能力对比; ## 5. 定价与商业模式分析; ## 6. 用户画像与目标场景; "
-            "## 7. 风险、不确定性与证据缺口; ## 8. 建议与下一步验证方向. "
-            "For each competitor, discuss positioning, feature signals, pricing/business-model signals, user/persona signals, and evidence gaps. "
-            "Use tables where useful, but every concrete row-level conclusion must remain traceable to claim evidence_ids. "
-            "Evidence ids are not automatically trustworthy: only use Evidence whose relevance_level is high or medium for concrete claims. "
+            "Use planner intent, selected dimensions, writer guidance, and SWOT to frame the report. "
+            "The report must include a SWOT section grounded in supplied evidence. "
+            "Only use high or medium relevance evidence for concrete claims. "
             "Do not use unrelated Evidence. Low relevance Evidence may only support cautious risk notes. "
             "You must cover every input competitor. Each competitor needs its own subsection and at least one claim when its own evidence exists. "
             "Never use one competitor's evidence_ids to support another competitor's claim. "
-            "If a competitor lacks evidence, write '当前公开证据不足，暂不做强结论。' and do not fabricate. "
-            "Return strict JSON only. If evidence is insufficient, write '证据不足' instead of fabricating. "
-            "For claims[].category, use only one of these exact enum values: "
-            "positioning, feature, pricing, persona, risk, recommendation. "
-            "Do not output Chinese category names or any other category value. "
-            "If a competitor lacks high or medium relevant evidence, write '当前公开证据不足，暂不做强结论。' and do not fabricate. "
-            "If unsure, use recommendation."
+            "If a competitor lacks evidence, clearly state that public evidence is insufficient and avoid fabrication. "
+            "Return strict JSON only with keys markdown_report, json_report, claims. "
+            "For claims[].category, use only one of: positioning, feature, pricing, persona, risk, recommendation."
         )
         user = (
-            "Return JSON with keys markdown_report, json_report, claims. "
-            "markdown_report must be a complete, board-readable competitor analysis report, not a short summary. "
-            "When evidence is sufficient, aim for 1800-2200 Chinese characters. "
-            "Expand each required section with evidence-backed analysis and avoid generic filler. "
+            "markdown_report must be a complete competitor analysis report with sections for executive summary, evidence scope, competitor analysis, SWOT, risks, and next steps. "
             "Each claim must include claim_id, competitor, text, evidence_ids, category, confidence. "
-            "Create 2-4 claims per competitor when that competitor has enough high or medium relevance evidence. "
-            "If a competitor has insufficient evidence, create only cautious risk/recommendation claims and clearly state the evidence gap. "
-            "claims[].category must be exactly one of: positioning, feature, pricing, persona, risk, recommendation. "
-            "claims[].competitor must be one of the input competitors. "
-            "Each claim text should be specific enough to support report sections, but must not introduce facts absent from the supplied input. "
-            "Example claim: "
-            '{"claim_id":"claim_1","competitor":"Feishu","text":"source-backed conclusion","category":"positioning","evidence_ids":["ev_1"],"confidence":0.82}. '
+            "Use 2-4 claims per competitor when evidence allows; otherwise keep claims cautious. "
             "Input:\n"
             f"{prompt_data}"
         )
         return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+    def _mock_markdown(self, input_data: ReportWriterInput, claims: list[Claim]) -> str:
+        task = input_data.task
+        dimensions = self._selected_dimensions(input_data)
+        guidance = [item for item in input_data.writer_guidance if item]
+        swot = input_data.knowledge.swot
+        return "\n".join(
+            [
+                f"# Competitor Analysis Report: {task.product_name}",
+                "",
+                "## Executive Summary",
+                self._executive_summary(input_data),
+                "",
+                "## Planner Focus",
+                f"Intent: {(input_data.intent_classification or 'competitive_analysis').replace('_', ' ')}.",
+                f"Selected dimensions: {', '.join(dimensions) if dimensions else 'positioning, feature, pricing, persona'}.",
+                *(f"- {line}" for line in guidance[:4]),
+                "",
+                "## Key Claims",
+                *[
+                    f"- **{claim.competitor or 'overall'} / {claim.claim_id}** {claim.text} Evidence: {', '.join(claim.evidence_ids)}"
+                    for claim in claims
+                ],
+                "",
+                "## SWOT Analysis",
+                *self._swot_markdown(swot),
+                "",
+                "## Evidence Gaps And Next Steps",
+                "Public conclusions remain constrained by competitor-specific evidence coverage, so any recommendation should be revalidated against official product, pricing, and customer-facing sources.",
+            ]
+        )
+
+    def _planner_report_payload(self, input_data: ReportWriterInput) -> dict[str, Any]:
+        return {
+            "intent_classification": input_data.intent_classification,
+            "selected_dimensions": self._selected_dimensions(input_data),
+            "writer_guidance": [item for item in input_data.writer_guidance if item],
+        }
+
+    @staticmethod
+    def _swot_payload(swot: SwotAnalysis) -> dict[str, Any]:
+        return swot.model_dump(mode="json")
+
+    @staticmethod
+    def _selected_dimensions(input_data: ReportWriterInput) -> list[str]:
+        return [str(item).strip().lower() for item in input_data.selected_dimensions if str(item).strip()]
+
+    @staticmethod
+    def _preferred_claim_category(dimensions: list[str]) -> str:
+        if "pricing" in dimensions:
+            return "pricing"
+        if "persona" in dimensions:
+            return "persona"
+        if "positioning" in dimensions:
+            return "positioning"
+        return "feature"
+
+    @staticmethod
+    def _claim_text(competitor: str, dimensions: list[str]) -> str:
+        dimension_label = ", ".join(dimensions[:3]) if dimensions else "feature, positioning, and pricing"
+        return (
+            f"{competitor} is described conservatively using only its own relevant evidence, with report emphasis on {dimension_label}."
+        )
+
+    def _executive_summary(self, input_data: ReportWriterInput) -> str:
+        intent = (input_data.intent_classification or "competitive_analysis").replace("_", " ")
+        dimensions = self._selected_dimensions(input_data)
+        dimension_label = ", ".join(dimensions[:4]) if dimensions else "positioning, feature, pricing, and persona"
+        return (
+            f"This report frames the comparison as {intent} and prioritizes {dimension_label}, so downstream conclusions stay aligned with the planner rather than defaulting to a generic summary."
+        )
+
+    def _swot_markdown(self, swot: SwotAnalysis) -> list[str]:
+        sections = [
+            ("Strengths", swot.strengths),
+            ("Weaknesses", swot.weaknesses),
+            ("Opportunities", swot.opportunities),
+            ("Threats", swot.threats),
+        ]
+        lines: list[str] = []
+        for title, items in sections:
+            lines.append(f"### {title}")
+            lines.extend(self._swot_item_lines(items))
+        return lines
+
+    @staticmethod
+    def _swot_item_lines(items: list[SwotItem]) -> list[str]:
+        if not items:
+            return ["- No evidence-backed items available."]
+        return [
+            f"- **{item.competitor or 'overall'}** {item.summary} Evidence: {', '.join(item.evidence_ids)}"
+            for item in items
+        ]

@@ -14,10 +14,20 @@ from app.schemas.models import (
     ClaimSupportResult,
     DimensionResult,
     Evidence,
+    PlannerAmbiguityLevel,
+    PlannerCompetitorCandidate,
+    PlannerExtractedContext,
+    PlannerScopeSnapshot,
+    PlannerScopeSize,
+    PlannerScopeType,
+    PlannerStage,
+    PlannerSurveyInput,
+    PlannerDownstreamGuidance,
     QaResult,
     Report,
     RetrievalResult,
     ReworkContext,
+    SwotAnalysis,
     SurveyEvidence,
     Task,
     TaskRun,
@@ -60,9 +70,31 @@ class WorkflowState(TypedDict, total=False):
     evidence_gate_output: dict[str, Any]
     page_fetch_output: dict[str, Any]
     evidence: list[Evidence]
+    intent_summary: str | None
+    intent_classification: str | None
+    ambiguity_level: PlannerAmbiguityLevel | None
+    scope_type: PlannerScopeType | None
+    scope_size: PlannerScopeSize | None
+    extracted_context: PlannerExtractedContext | None
     selected_dimensions: list[str]
     analysis_dimension_plan: AnalysisDimensionPlan | None
+    survey_needed: bool
+    survey_recommended: bool
+    survey_objective: str | None
+    survey_inputs: PlannerSurveyInput | None
+    downstream_guidance: PlannerDownstreamGuidance | None
+    confirmed_scope: PlannerScopeSnapshot | None
+    inferred_scope: PlannerScopeSnapshot | None
+    suggested_scope: PlannerScopeSnapshot | None
+    recommended_next_constraints: list[str]
+    assumptions: list[str]
+    candidate_competitors: list[PlannerCompetitorCandidate]
+    clarification_targets: list[str]
+    planning_stages: list[PlannerStage]
+    planner_notes: list[str]
+    planner_confidence: float | None
     dimension_results: list[DimensionResult]
+    swot_analysis: SwotAnalysis | None
     survey_evidence: list[SurveyEvidence]
     chunks: list[Chunk]
     retrieval_results: list[RetrievalResult]

@@ -57,12 +57,23 @@ docs/
 ## 后端启动
 
 ```bash
-cd backend
 python -m venv .venv
 .venv\Scripts\activate
-pip install -r requirements.txt
-uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+pip install -r backend\requirements.txt
+.\scripts\start_backend.ps1
 ```
+
+或者不激活环境，直接显式使用根目录 Python 3.12：
+
+```bash
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir backend --reload --host 127.0.0.1 --port 8000
+```
+
+说明：
+
+- 项目现在统一使用仓库根目录 `.venv`
+- 不再推荐使用 `backend/.venv`
+- `backend/.venv` 如果仍存在，可能是旧的 Python 3.8 环境
 
 健康检查：
 

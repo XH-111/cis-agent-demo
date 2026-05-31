@@ -19,6 +19,7 @@ from app.schemas import (
     QaResult,
     ReportWriterInput,
     ReportWriterOutput,
+    ReworkContext,
     ReworkHistoryItem,
     Task,
 )
@@ -56,6 +57,7 @@ class MockWorkflowRunner:
         self.trace_service.set_run_context(run_id)
         task = self.task_service.update_status(task_id, "running")
         plan = self.planner.run(PlannerInput(task=task, run_id=run_id))
+        planner_query_hints = plan.analysis_dimension_plan.query_hints if plan.analysis_dimension_plan else {}
         history: list[ReworkHistoryItem] = []
 
         if demo_mode == "qa_missing_evidence":
@@ -75,15 +77,18 @@ class MockWorkflowRunner:
                 writer_mode=writer_mode,
                 collector_mode=collector_mode,
                 analyst_mode=analyst_mode,
+                planner_query_hints=planner_query_hints,
             )
 
         evidence, analysis, writer_output = self._produce_outputs(
             task=task,
+            plan=plan,
             demo_mode=demo_mode,
             retry_count=0,
             writer_mode=writer_mode,
             collector_mode=collector_mode,
             analyst_mode=analyst_mode,
+            planner_query_hints=planner_query_hints,
         )
 
         qa_result = self.qa.run(
@@ -113,6 +118,7 @@ class MockWorkflowRunner:
                 writer_mode=writer_mode,
                 collector_mode=collector_mode,
                 analyst_mode=analyst_mode,
+                planner_query_hints=planner_query_hints,
             )
 
         return self._finalize_or_fail(task, plan, qa_result, history, evidence, writer_output)
@@ -121,17 +127,30 @@ class MockWorkflowRunner:
         self,
         *,
         task: Task,
+        plan: PlannerOutput,
         demo_mode: DemoMode,
         retry_count: int,
         writer_mode: str,
         collector_mode: str,
         analyst_mode: str,
+        planner_query_hints: dict[str, list[str]] | None = None,
         evidence: list[Evidence] | None = None,
         analysis: AnalystOutput | None = None,
+        rework_context: ReworkContext | None = None,
     ) -> tuple[list[Evidence], AnalystOutput, ReportWriterOutput]:
         if evidence is None:
             collector_output = self.collector.run(
-                CollectorInput(task=task, run_id=self.run_id, retry_count=retry_count, collector_mode=collector_mode)
+                CollectorInput(
+                    task=task,
+                    run_id=self.run_id,
+                    retry_count=retry_count,
+                    collector_mode=collector_mode,
+                    planner_query_hints=planner_query_hints or {},
+                    gate_context={
+                        "rework_context": rework_context.model_dump(mode="json") if rework_context else None,
+                        "targeted_recollection": self._targeted_recollection_summary(rework_context),
+                    },
+                )
             )
             evidence = collector_output.evidence
             evidence = self.evidence_service.save_many(task.task_id, evidence, run_id=self.run_id)
@@ -145,6 +164,8 @@ class MockWorkflowRunner:
                     retry_count=retry_count,
                     force_invalid_extraction=demo_mode == "qa_invalid_extraction",
                     analyst_mode=analyst_mode,
+                    selected_dimensions=plan.selected_dimensions,
+                    rework_context=rework_context,
                 )
             )
 
@@ -157,6 +178,9 @@ class MockWorkflowRunner:
                 retry_count=retry_count,
                 force_bad_format=demo_mode == "qa_bad_report",
                 writer_mode=writer_mode,
+                selected_dimensions=plan.selected_dimensions,
+                writer_guidance=plan.downstream_guidance.writer if plan.downstream_guidance else [],
+                intent_classification=plan.intent_classification,
             )
         )
         return evidence, analysis, writer_output
@@ -174,6 +198,7 @@ class MockWorkflowRunner:
         writer_mode: str,
         collector_mode: str,
         analyst_mode: str,
+        planner_query_hints: dict[str, list[str]] | None,
     ) -> dict:
         current_task = task
         current_qa = qa_result
@@ -185,6 +210,7 @@ class MockWorkflowRunner:
             instruction = current_qa.rework_instructions[0] if current_qa.rework_instructions else None
             if instruction is None or current_qa.route_to is None:
                 break
+            rework_context = self._rework_context_from_qa(current_qa)
 
             history_item = ReworkHistoryItem(
                 round=current_qa.rework_count,
@@ -208,12 +234,25 @@ class MockWorkflowRunner:
                         run_id=self.run_id,
                         retry_count=current_qa.rework_count,
                         collector_mode=collector_mode,
+                        planner_query_hints=planner_query_hints or {},
+                        gate_context={
+                            "rework_context": rework_context.model_dump(mode="json") if rework_context else None,
+                            "targeted_recollection": self._targeted_recollection_summary(rework_context),
+                        },
                     )
                 )
                 current_evidence = collector_output.evidence
                 current_evidence = self.evidence_service.save_many(current_task.task_id, current_evidence, run_id=self.run_id)
                 current_analysis = self.analyst.run(
-                    AnalystInput(task=current_task, run_id=self.run_id, evidence=current_evidence, retry_count=current_qa.rework_count, analyst_mode=analyst_mode)
+                    AnalystInput(
+                        task=current_task,
+                        run_id=self.run_id,
+                        evidence=current_evidence,
+                        retry_count=current_qa.rework_count,
+                        analyst_mode=analyst_mode,
+                        selected_dimensions=plan.selected_dimensions,
+                        rework_context=rework_context,
+                    )
                 )
                 current_writer_output = self.writer.run(
                     ReportWriterInput(
@@ -223,11 +262,22 @@ class MockWorkflowRunner:
                         evidence=current_evidence,
                         retry_count=current_qa.rework_count,
                         writer_mode=writer_mode,
+                        selected_dimensions=plan.selected_dimensions,
+                        writer_guidance=plan.downstream_guidance.writer if plan.downstream_guidance else [],
+                        intent_classification=plan.intent_classification,
                     )
                 )
             elif current_qa.route_to == "AnalystAgent":
                 current_analysis = self.analyst.run(
-                    AnalystInput(task=current_task, run_id=self.run_id, evidence=current_evidence, retry_count=current_qa.rework_count, analyst_mode=analyst_mode)
+                    AnalystInput(
+                        task=current_task,
+                        run_id=self.run_id,
+                        evidence=current_evidence,
+                        retry_count=current_qa.rework_count,
+                        analyst_mode=analyst_mode,
+                        selected_dimensions=plan.selected_dimensions,
+                        rework_context=rework_context,
+                    )
                 )
                 current_writer_output = self.writer.run(
                     ReportWriterInput(
@@ -237,12 +287,23 @@ class MockWorkflowRunner:
                         evidence=current_evidence,
                         retry_count=current_qa.rework_count,
                         writer_mode=writer_mode,
+                        selected_dimensions=plan.selected_dimensions,
+                        writer_guidance=plan.downstream_guidance.writer if plan.downstream_guidance else [],
+                        intent_classification=plan.intent_classification,
                     )
                 )
             elif current_qa.route_to == "ReportWriterAgent":
                 if current_analysis is None:
                     current_analysis = self.analyst.run(
-                        AnalystInput(task=current_task, run_id=self.run_id, evidence=current_evidence, retry_count=current_qa.rework_count, analyst_mode=analyst_mode)
+                        AnalystInput(
+                            task=current_task,
+                            run_id=self.run_id,
+                            evidence=current_evidence,
+                            retry_count=current_qa.rework_count,
+                            analyst_mode=analyst_mode,
+                            selected_dimensions=plan.selected_dimensions,
+                            rework_context=rework_context,
+                        )
                     )
                 current_writer_output = self.writer.run(
                     ReportWriterInput(
@@ -252,6 +313,9 @@ class MockWorkflowRunner:
                         evidence=current_evidence,
                         retry_count=current_qa.rework_count,
                         writer_mode=writer_mode,
+                        selected_dimensions=plan.selected_dimensions,
+                        writer_guidance=plan.downstream_guidance.writer if plan.downstream_guidance else [],
+                        intent_classification=plan.intent_classification,
                     )
                 )
             else:
@@ -324,6 +388,57 @@ class MockWorkflowRunner:
         if qa_result.status == "failed":
             return "qa_failed"
         return "completed"
+
+    @staticmethod
+    def _rework_context_from_qa(qa_result: QaResult) -> ReworkContext | None:
+        if not qa_result.rework_instructions:
+            return None
+        instruction = qa_result.rework_instructions[0]
+        metadata = instruction.metadata or {}
+        route_to = qa_result.route_to if qa_result.route_to in {
+            "PlannerAgent",
+            "CollectorAgent",
+            "PageFetcher",
+            "Chunker",
+            "Indexer",
+            "Retriever",
+            "AnalystAgent",
+            "ReportWriterAgent",
+            "QaAgent",
+            "SurveyAgent",
+            "QuestionnaireAgent",
+            "EvidenceGate",
+            "HumanReviewAgent",
+            "FinalReport",
+            "FinalReportAgent",
+            "WorkflowEngine",
+        } else None
+        return ReworkContext(
+            route_to=route_to,
+            error_type=instruction.error_type,
+            reason=instruction.reason,
+            target_agent=instruction.target_agent,
+            related_competitor=metadata.get("competitor"),
+            related_claim_id=instruction.claim_id,
+            suggested_action=instruction.suggested_action,
+            metadata=metadata,
+        )
+
+    @staticmethod
+    def _targeted_recollection_summary(rework_context: ReworkContext | None) -> dict:
+        if rework_context is None or not rework_context.related_competitor:
+            return {"by_competitor": {}}
+        return {
+            "by_competitor": {
+                rework_context.related_competitor: [
+                    {
+                        "error_type": rework_context.error_type,
+                        "reason": rework_context.reason,
+                        "metadata": rework_context.metadata,
+                    }
+                ]
+            }
+        }
 
 
 def default_dag(status: str) -> dict:

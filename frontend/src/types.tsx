@@ -7,6 +7,8 @@ export type {
   QaResult,
   Report,
   SearchTestResult,
+  SwotAnalysis,
+  SwotItem,
   Task,
   TaskRun,
   TraceRecord,
