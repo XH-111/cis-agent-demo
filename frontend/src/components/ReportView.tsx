@@ -47,6 +47,23 @@ export function ReportView({
       </div>
 
       <div className="space-y-3">
+        {report.json_report.planner && (
+          <section className="rounded border border-line bg-white p-4">
+            <h3 className="mb-3 text-sm font-semibold">Planner Framing</h3>
+            <div className="space-y-2 text-sm">
+              <div>intent: {report.json_report.planner.intent_classification ?? "-"}</div>
+              <div>dimensions: {(report.json_report.planner.selected_dimensions ?? []).join(", ") || "-"}</div>
+              {!!report.json_report.planner.writer_guidance?.length && (
+                <div className="rounded border border-line bg-panel p-3 text-xs leading-5">
+                  {report.json_report.planner.writer_guidance.slice(0, 4).map((item) => (
+                    <div key={item}>- {item}</div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </section>
+        )}
+
         {coverage.length > 0 && (
           <section className="rounded border border-line bg-white p-4">
             <h3 className="mb-3 text-sm font-semibold">竞品覆盖情况</h3>

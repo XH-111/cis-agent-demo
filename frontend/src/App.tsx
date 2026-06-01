@@ -1,18 +1,24 @@
-import { Play } from "lucide-react";
+import { BarChart3, Network, Play } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "./api/client";
+import { apiRecorder, getApiRecorderSnapshot } from "./api/recorder";
 import { DagView } from "./components/DagView";
 import { DemoGuide } from "./components/DemoGuide";
 import { KnowledgeView } from "./components/KnowledgeView";
+import { PlannerSummaryCard } from "./components/PlannerSummaryCard";
 import { QaPanel } from "./components/QaPanel";
 import { ReportView } from "./components/ReportView";
 import { TaskForm } from "./components/TaskForm";
 import { TaskList } from "./components/TaskList";
 import { TraceViewer } from "./components/TraceViewer";
+import { SurveyWorkspacePage } from "./pages/SurveyWorkspacePage";
 import type { Claim, CollectorDiagnostics, CollectorStatus, Dag, DemoMode, Evidence, LlmStatus, QaResult, Report, SearchTestResult, Task, TaskRun, TraceRecord, WriterDiagnostics, WorkflowSummary } from "./types";
 import { Pill } from "./types";
 
+type Workspace = "competitive" | "survey";
+
 export default function App() {
+  const [workspace, setWorkspace] = useState<Workspace>("competitive");
   const [tasks, setTasks] = useState<Task[]>([]);
   const [task, setTask] = useState<Task>();
   const [dag, setDag] = useState<Dag>();
@@ -37,12 +43,17 @@ export default function App() {
   const [llmTesting, setLlmTesting] = useState(false);
   const [searchTesting, setSearchTesting] = useState(false);
   const [searchTestResult, setSearchTestResult] = useState<SearchTestResult>();
+  const [apiRecorderSnapshot, setApiRecorderSnapshot] = useState(getApiRecorderSnapshot());
 
   useEffect(() => {
     loadTasks();
     loadLlmStatus();
     loadCollectorStatus();
   }, []);
+
+  useEffect(() => apiRecorder.subscribe(() => {
+    setApiRecorderSnapshot(getApiRecorderSnapshot());
+  }), []);
 
   async function loadLlmStatus() {
     await api.llmStatus().then(setLlmStatus).catch(() => setLlmStatus(undefined));
@@ -204,8 +215,27 @@ export default function App() {
           </div>
           {task && <div className="flex items-center gap-3 text-sm"><span>当前任务：{task.task_id}</span><Pill value={task.status} /></div>}
         </div>
+        <nav className="mt-4 flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => setWorkspace("competitive")}
+            className={`inline-flex items-center gap-2 rounded border px-3 py-2 text-sm font-semibold ${workspace === "competitive" ? "border-white bg-white text-ink" : "border-slate-500 bg-transparent text-slate-200"}`}
+          >
+            <Network size={16} /> 竞品分析工作台
+          </button>
+          <button
+            type="button"
+            onClick={() => setWorkspace("survey")}
+            className={`inline-flex items-center gap-2 rounded border px-3 py-2 text-sm font-semibold ${workspace === "survey" ? "border-white bg-white text-ink" : "border-slate-500 bg-transparent text-slate-200"}`}
+          >
+            <BarChart3 size={16} /> 问卷分析工作台
+          </button>
+        </nav>
       </header>
 
+      {workspace === "survey" && <SurveyWorkspacePage />}
+
+      {workspace === "competitive" && (
       <div className="p-4">
         <div className="mb-4 grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(360px,0.65fr)]">
           <TaskForm onCreated={handleCreated} />
@@ -335,6 +365,43 @@ export default function App() {
           <span className="text-sm text-slate-600">执行所选 Mock Agent DAG，并生成 DAG、报告、证据、QA 和 Trace。</span>
         </div>
 
+        <div className="mb-4 flex flex-wrap items-center gap-3 rounded border border-dashed border-line bg-white p-3 text-sm">
+          <span className="font-semibold">API Recorder</span>
+          <label className="inline-flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={apiRecorderSnapshot.enabled}
+              onChange={(event) => apiRecorder.setEnabled(event.target.checked)}
+            />
+            enabled
+          </label>
+          <span>recorded: {apiRecorderSnapshot.records.length}</span>
+          <button
+            type="button"
+            onClick={() => apiRecorder.clear()}
+            className="rounded border border-line bg-white px-3 py-2 text-sm font-semibold"
+          >
+            Clear Recording
+          </button>
+          <button
+            type="button"
+            onClick={() => apiRecorder.exportRaw()}
+            className="rounded border border-line bg-white px-3 py-2 text-sm font-semibold"
+          >
+            Export Raw JSON
+          </button>
+          <button
+            type="button"
+            onClick={() => apiRecorder.exportGroupedMarkdown()}
+            className="rounded border border-line bg-white px-3 py-2 text-sm font-semibold"
+          >
+            Export Grouped Markdown
+          </button>
+          <span className="text-xs text-slate-500">
+            Records frontend request/response inputs and outputs during your manual session.
+          </span>
+        </div>
+
         {(llmStatus || collectorStatus || writerDiagnosticMessage || collectorDiagnosticMessage || workflowSummary) && (
           <div className="mb-4 rounded border border-line bg-white p-3 text-sm">
             <div className="flex flex-wrap gap-x-5 gap-y-2">
@@ -369,8 +436,14 @@ export default function App() {
                   <span>requested: {workflowSummary.workflow_engine_requested ?? "-"}</span>
                   <span>rework_count: {workflowSummary.rework_count ?? 0}</span>
                   <span>final_status: {workflowSummary.final_status ?? "-"}</span>
+                  {!!workflowSummary.selected_dimensions?.length && <span>planner dimensions: {workflowSummary.selected_dimensions.join(", ")}</span>}
                   {workflowSummary.workflow_engine_used === "langgraph" && <span className="font-semibold text-accent">LangGraph Runner</span>}
                 </div>
+                {!!workflowSummary.downstream_guidance?.writer?.length && (
+                  <div className="mt-1 text-xs text-slate-600">
+                    writer guidance: {workflowSummary.downstream_guidance.writer.slice(0, 3).join(" | ")}
+                  </div>
+                )}
                 {!!workflowSummary.conditional_routes_taken?.length && (
                   <div className="mt-1 text-xs text-slate-600">
                     routes: {workflowSummary.conditional_routes_taken.map((item) => `${item.from_node ?? "qa"} -> ${item.to_node ?? "-"} (${item.reason ?? "qa"})`).join(" | ")}
@@ -395,10 +468,17 @@ export default function App() {
             {collectorDiagnosticMessage && (
               <div className={`mt-2 rounded border px-3 py-2 ${collectorDiagnostics?.fallback_used ? "border-amber-300 bg-amber-50 text-warning" : "border-green-300 bg-green-50 text-success"}`}>
                 {collectorDiagnosticMessage}
+                {!!collectorDiagnostics?.effective_queries_preview_by_competitor && (
+                  <div className="mt-1 text-xs">
+                    planner queries: {Object.entries(collectorDiagnostics.effective_queries_preview_by_competitor).map(([competitor, queries]) => `${competitor}: ${(queries ?? []).slice(0, 2).join(" / ")}`).join(" | ")}
+                  </div>
+                )}
               </div>
             )}
           </div>
         )}
+
+        <PlannerSummaryCard workflowSummary={workflowSummary} collectorDiagnostics={collectorDiagnostics} />
 
         <div className="space-y-4">
           <DagView dag={dag} traces={traces} qaRouteTo={qa?.route_to} />
@@ -414,6 +494,7 @@ export default function App() {
           <TraceViewer traces={traces} />
         </div>
       </div>
+      )}
     </main>
   );
 }

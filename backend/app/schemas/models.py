@@ -19,6 +19,7 @@ AgentName = Literal[
     "QaAgent",
     "SurveyAgent",
     "QuestionnaireAgent",
+    "SurveyAnalysisAgent",
     "EvidenceGate",
     "HumanReviewAgent",
     "FinalReport",
@@ -81,6 +82,7 @@ class Evidence(BaseModel):
     relevance_level: Literal["high", "medium", "low", "unrelated"] = "high"
     relevance_reason: str = "Mock or legacy evidence is treated as relevant by default."
     entity_match_signals: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
     content_mode: Literal["snippet", "page"] = "snippet"
     page_fetch_success: bool = False
     page_title: str | None = None
@@ -128,6 +130,20 @@ class UserPersona(BaseModel):
     evidence_ids: list[str] = Field(min_length=1)
 
 
+class SwotItem(BaseModel):
+    summary: str = Field(min_length=1)
+    competitor: str | None = None
+    evidence_ids: list[str] = Field(min_length=1)
+    confidence: float = Field(ge=0, le=1)
+
+
+class SwotAnalysis(BaseModel):
+    strengths: list[SwotItem] = Field(default_factory=list)
+    weaknesses: list[SwotItem] = Field(default_factory=list)
+    opportunities: list[SwotItem] = Field(default_factory=list)
+    threats: list[SwotItem] = Field(default_factory=list)
+
+
 class Claim(BaseModel):
     claim_id: str = Field(default_factory=lambda: f"claim_{uuid4().hex[:10]}")
     competitor: str | None = None
@@ -152,6 +168,93 @@ class AnalysisDimensionPlan(BaseModel):
     dimension_plans: list[AnalysisDimension] = Field(default_factory=list)
     research_goals: list[str] = Field(default_factory=list)
     query_hints: dict[str, list[str]] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+PlannerAmbiguityLevel = Literal["low", "medium", "high"]
+PlannerScopeType = Literal[
+    "specific_product_benchmark",
+    "semi_specific_benchmark",
+    "category_scan",
+    "broad_competitive_analysis",
+    "mixed_intent",
+    "strategic_ambiguous",
+]
+PlannerScopeSize = Literal["narrow", "medium", "broad"]
+
+
+PlannerIntentLabel = Literal[
+    "competitive_analysis",
+    "product_positioning",
+    "feature_comparison",
+    "ux_review",
+    "improvement_opportunity",
+    "survey_design",
+    "survey_analysis",
+    "market_research",
+    "unknown",
+]
+
+
+class PlannerExtractedContext(BaseModel):
+    intent_classification: PlannerIntentLabel = "competitive_analysis"
+    industry: str | None = None
+    domain: str | None = None
+    product_name: str | None = None
+    product_type: str | None = None
+    target_users: list[str] = Field(default_factory=list)
+    region: str | None = None
+    competitors_mentioned: list[str] = Field(default_factory=list)
+    analysis_focus_points: list[str] = Field(default_factory=list)
+    requested_outputs: list[str] = Field(default_factory=list)
+    survey_needed: bool = False
+    survey_reason: str | None = None
+    missing_information: list[str] = Field(default_factory=list)
+    confidence: float = Field(default=0.0, ge=0, le=1)
+
+
+class PlannerSurveyInput(BaseModel):
+    objective: str | None = None
+    respondent_type: str | None = None
+    question_themes: list[str] = Field(default_factory=list)
+    hypotheses: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class PlannerCompetitorCandidate(BaseModel):
+    name: str = Field(min_length=1)
+    reason: str = ""
+    confidence: float = Field(default=0.0, ge=0, le=1)
+    priority: int = Field(default=0, ge=0)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class PlannerStage(BaseModel):
+    stage_id: str = Field(min_length=1)
+    label: str = Field(min_length=1)
+    objective: str = Field(min_length=1)
+    outputs: list[str] = Field(default_factory=list)
+    depends_on: list[str] = Field(default_factory=list)
+    priority: int = Field(default=0, ge=0)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class PlannerDownstreamGuidance(BaseModel):
+    collector: list[str] = Field(default_factory=list)
+    analyst: list[str] = Field(default_factory=list)
+    writer: list[str] = Field(default_factory=list)
+    qa: list[str] = Field(default_factory=list)
+    survey: list[str] = Field(default_factory=list)
+
+
+class PlannerScopeSnapshot(BaseModel):
+    competitors: list[str] = Field(default_factory=list)
+    region: str | None = None
+    industry: str | None = None
+    product_name: str | None = None
+    target_users: list[str] = Field(default_factory=list)
+    selected_dimensions: list[str] = Field(default_factory=list)
+    requested_outputs: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -251,12 +354,24 @@ class AgentMessage(BaseModel):
 
 class ReworkInstruction(BaseModel):
     target_agent: AgentName
-    error_type: Literal["missing_evidence", "missing_relevant_evidence", "invalid_extraction", "contradiction", "bad_report_format"]
+    error_type: Literal[
+        "missing_evidence",
+        "missing_relevant_evidence",
+        "invalid_extraction",
+        "contradiction",
+        "bad_report_format",
+        "swot_missing_support",
+        "swot_over_inference",
+        "swot_competitor_mismatch",
+        "swot_dimension_gap",
+        "swot_sparse_competitor_coverage",
+    ]
     reason: str
     suggested_action: str
     claim_id: str | None = None
     failed_claim: str | None = None
     failed_schema: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ReworkHistoryItem(BaseModel):
@@ -278,6 +393,7 @@ class QaResult(BaseModel):
     rework_history: list[ReworkHistoryItem] = Field(default_factory=list)
     route_to: AgentName | None = None
     rework_count: int = 0
+    metadata: dict[str, Any] = Field(default_factory=dict)
     checked_at: datetime = Field(default_factory=datetime.utcnow)
 
 
