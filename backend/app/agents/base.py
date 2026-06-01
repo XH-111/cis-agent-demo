@@ -49,6 +49,7 @@ def run_with_trace(
     *,
     trace_service: TraceService,
     task_id: str,
+    run_id: str | None = None,
     agent_name: str,
     to_agent: str,
     message_type: str,
@@ -74,6 +75,7 @@ def run_with_trace(
         trace = TraceRecord(
             trace_id=trace_id,
             task_id=task_id,
+            run_id=run_id,
             agent_name=agent_name,
             input_summary=input_summary,
             output_summary=_diagnostic_summary(payload, f"已生成 {schema_name}"),
@@ -88,6 +90,7 @@ def run_with_trace(
         trace = TraceRecord(
             trace_id=trace_id,
             task_id=task_id,
+            run_id=run_id,
             agent_name=agent_name,
             input_summary=input_summary,
             output_summary=_diagnostic_summary(error_output, "Agent 输出未通过校验"),

@@ -1,32 +1,57 @@
 from collections import defaultdict
 
 from app.agents.base import run_with_trace
-from app.schemas import AnalystInput, AnalystOutput, Evidence, FeatureTree, PricingModel, ProductProfile, UserPersona
+from app.schemas import (
+    AnalystInput,
+    AnalystOutput,
+    Evidence,
+    FeatureTree,
+    PricingModel,
+    ProductProfile,
+    SwotAnalysis,
+    SwotItem,
+    UserPersona,
+)
 from app.services.evidence_relevance_service import is_relevant_evidence
 from app.services.trace_service import TraceService
 
 
 FEATURE_KEYWORDS = {
     "AI": ["ai", "artificial intelligence", "智能", "人工智能"],
-    "automation": ["automation", "自动化"],
-    "collaboration": ["collaboration", "collaborative", "协作", "团队", "办公"],
+    "automation": ["automation", "automated", "自动化"],
+    "collaboration": ["collaboration", "collaborative", "team", "协作", "团队", "办公"],
     "pricing": ["pricing", "price", "plan", "定价", "价格", "套餐"],
     "integration": ["integration", "integrations", "集成"],
-    "analytics": ["analytics", "analysis", "分析"],
-    "security": ["security", "安全"],
+    "analytics": ["analytics", "analysis", "dashboard", "分析", "看板"],
+    "security": ["security", "compliance", "安全", "合规"],
     "mobile": ["mobile", "app", "移动端"],
-    "API": ["api", "接口"],
-    "workflow": ["workflow", "流程"],
+    "API": ["api", "developer", "接口", "开发者"],
+    "workflow": ["workflow", "process", "流程"],
 }
 
-PRICING_KEYWORDS = ["free", "trial", "pricing", "subscription", "enterprise", "plan", "quote", "免费", "试用", "订阅", "企业版", "套餐", "定价", "价格"]
+PRICING_KEYWORDS = [
+    "free",
+    "trial",
+    "pricing",
+    "subscription",
+    "enterprise",
+    "plan",
+    "quote",
+    "免费",
+    "试用",
+    "订阅",
+    "企业版",
+    "套餐",
+    "定价",
+    "价格",
+]
 PERSONA_KEYWORDS = {
-    "企业团队": ["enterprise", "企业"],
-    "团队用户": ["team", "团队"],
-    "开发者": ["developer", "开发者"],
+    "企业团队": ["enterprise", "procurement", "企业"],
+    "团队用户": ["team", "operations", "团队"],
+    "开发者": ["developer", "engineering", "开发者"],
     "市场团队": ["marketer", "marketing", "市场"],
-    "产品团队": ["product team", "product manager", "产品经理"],
-    "学生": ["student", "学生"],
+    "产品团队": ["product team", "product manager", "产品团队", "产品经理"],
+    "学生": ["student", "education", "学生"],
 }
 
 
@@ -64,13 +89,16 @@ class AnalystAgent:
     def _mock_output(self, input_data: AnalystInput, fallback_reason: str | None) -> AnalystOutput:
         task = input_data.task
         ids = self._ids(input_data.evidence)
+        selected_dimensions = self._selected_dimensions(input_data)
         diagnostics = self._diagnostics(
             input_data,
             "mock",
             ids,
             fallback_reason=fallback_reason,
             evidence_by_competitor=self._group_by_competitor(input_data.evidence, task.competitors),
-            extracted_fields_by_competitor={competitor: {"profile": 1, "feature": 1, "pricing": 1, "persona": 1} for competitor in task.competitors},
+            extracted_fields_by_competitor={
+                competitor: {"profile": 1, "feature": 1, "pricing": 1, "persona": 1} for competitor in task.competitors
+            },
         )
         competitor_analysis = {
             competitor: {
@@ -85,15 +113,20 @@ class AnalystAgent:
         }
         profile = ProductProfile(
             product_name=task.product_name,
-            positioning="" if input_data.force_invalid_extraction else f"{task.product_name} is a structured competitor analysis workspace.",
-            target_segments=[] if input_data.force_invalid_extraction else ["product marketing team", "strategy team", "sales enablement team"],
-            strengths=["traceable evidence", "structured Schema", "QA feedback loop"],
+            positioning=""
+            if input_data.force_invalid_extraction
+            else f"{task.product_name} is a structured competitor analysis workspace.",
+            target_segments=[]
+            if input_data.force_invalid_extraction
+            else ["product marketing team", "strategy team", "sales enablement team"],
+            strengths=["traceable evidence", "structured schema", "QA feedback loop"],
             weaknesses=["current demo still uses simplified extraction rules"],
             evidence_ids=ids[:2],
             custom_dimensions={
                 "region": task.region,
                 "industry": task.industry,
                 "analyst_mode": "mock",
+                "selected_dimensions": selected_dimensions,
                 "competitor_analysis": competitor_analysis,
             },
         )
@@ -115,10 +148,27 @@ class AnalystAgent:
             buying_triggers=["new market entry", "quarterly planning", "sales battlecard refresh"],
             evidence_ids=ids[2:4] or ids[:1],
         )
-        return AnalystOutput(product_profile=profile, feature_tree=feature_tree, pricing_model=pricing, user_persona=persona, diagnostics=diagnostics)
+        swot = self._build_mock_swot(task.competitors, ids, selected_dimensions)
+        diagnostics.update(
+            {
+                "selected_dimensions": selected_dimensions,
+                "selected_dimension_count": len(selected_dimensions),
+                "swot_item_count": self._count_swot_items(swot),
+                "rework_context_applied": bool(input_data.rework_context),
+            }
+        )
+        return AnalystOutput(
+            product_profile=profile,
+            feature_tree=feature_tree,
+            pricing_model=pricing,
+            user_persona=persona,
+            swot=swot,
+            diagnostics=diagnostics,
+        )
 
     def _evidence_output(self, input_data: AnalystInput, fallback_reason: str | None) -> AnalystOutput:
         task = input_data.task
+        selected_dimensions = self._selected_dimensions(input_data)
         usable_evidence = [item for item in input_data.evidence if item.relevance_level in {"high", "medium"}]
         weak_evidence = [item for item in input_data.evidence if item.relevance_level == "low"]
         evidence_by_competitor = self._group_by_competitor(usable_evidence, task.competitors)
@@ -204,16 +254,22 @@ class AnalystAgent:
                     competitor: len(records) for competitor, records in all_evidence_by_competitor.items()
                 },
                 "content_source_used": self._content_source_summary(usable_evidence),
+                "selected_dimensions": selected_dimensions,
+                "selected_dimension_count": len(selected_dimensions),
             }
         )
         profile = ProductProfile(
             product_name=task.product_name,
-            positioning="" if input_data.force_invalid_extraction else (
+            positioning=""
+            if input_data.force_invalid_extraction
+            else (
                 "Evidence is insufficient for a confident conclusion."
                 if insufficient
                 else f"{task.product_name} compares {', '.join(task.competitors)} using competitor-specific public evidence."
             ),
-            target_segments=[] if input_data.force_invalid_extraction else (["Evidence is insufficient for a confident conclusion."] if insufficient else ["enterprise team", "product team"]),
+            target_segments=[]
+            if input_data.force_invalid_extraction
+            else (["Evidence is insufficient for a confident conclusion."] if insufficient else ["enterprise team", "product team"]),
             strengths=self._strengths_from_features(dict(aggregate_feature_hits)) or ["Evidence is insufficient for a confident conclusion."],
             weaknesses=["Conclusions remain limited by available public evidence coverage per competitor."],
             evidence_ids=ids[: min(5, len(ids))],
@@ -221,6 +277,7 @@ class AnalystAgent:
                 "region": task.region,
                 "industry": task.industry,
                 "analyst_mode": "evidence",
+                "selected_dimensions": selected_dimensions,
                 "insufficient_evidence": insufficient,
                 "supporting_evidence_ids": ids,
                 "competitor_analysis": competitor_analysis,
@@ -239,7 +296,8 @@ class AnalystAgent:
                 item.evidence_id
                 for records in evidence_by_competitor.values()
                 for item in self._keyword_evidence(records, PRICING_KEYWORDS)
-            ] or ids[:1],
+            ]
+            or ids[:1],
         )
         persona = UserPersona(
             persona_name=aggregate_persona_labels[0] if aggregate_persona_labels else "competitor evaluation team",
@@ -248,7 +306,29 @@ class AnalystAgent:
             buying_triggers=persona_triggers or ["Evidence is insufficient for a confident conclusion."],
             evidence_ids=ids[: min(5, len(ids))],
         )
-        return AnalystOutput(product_profile=profile, feature_tree=feature_tree, pricing_model=pricing, user_persona=persona, diagnostics=diagnostics)
+        swot = self._build_evidence_swot(
+            task.competitors,
+            selected_dimensions,
+            evidence_by_competitor=evidence_by_competitor,
+            competitor_analysis=competitor_analysis,
+            aggregate_feature_hits=dict(aggregate_feature_hits),
+        )
+        swot, swot_refinement_summary = self._refine_swot_for_rework(
+            swot,
+            input_data=input_data,
+            evidence_by_competitor=evidence_by_competitor,
+        )
+        diagnostics["swot_item_count"] = self._count_swot_items(swot)
+        diagnostics["rework_context_applied"] = bool(input_data.rework_context)
+        diagnostics["swot_refinement_summary"] = swot_refinement_summary
+        return AnalystOutput(
+            product_profile=profile,
+            feature_tree=feature_tree,
+            pricing_model=pricing,
+            user_persona=persona,
+            swot=swot,
+            diagnostics=diagnostics,
+        )
 
     def _diagnostics(
         self,
@@ -268,7 +348,9 @@ class AnalystAgent:
         grouped = evidence_by_competitor or self._group_by_competitor(input_data.evidence, input_data.task.competitors)
         evidence_count_by_competitor = {competitor: len(records) for competitor, records in grouped.items()}
         competitors_covered = [competitor for competitor, count in evidence_count_by_competitor.items() if count > 0]
-        missing_competitors = [competitor for competitor in input_data.task.competitors if evidence_count_by_competitor.get(competitor, 0) == 0]
+        missing_competitors = [
+            competitor for competitor in input_data.task.competitors if evidence_count_by_competitor.get(competitor, 0) == 0
+        ]
         return {
             "analyst_mode_requested": input_data.analyst_mode,
             "analyst_mode_used": used_mode,
@@ -286,9 +368,8 @@ class AnalystAgent:
             "competitors_covered": competitors_covered,
             "missing_competitors": missing_competitors,
             "evidence_count_by_competitor": evidence_count_by_competitor,
-            "evidence_used_by_competitor": evidence_used_by_competitor or {
-                competitor: [item.evidence_id for item in records] for competitor, records in grouped.items()
-            },
+            "evidence_used_by_competitor": evidence_used_by_competitor
+            or {competitor: [item.evidence_id for item in records] for competitor, records in grouped.items()},
             "extracted_fields_by_competitor": extracted_fields_by_competitor or {},
         }
 
@@ -364,12 +445,251 @@ class AnalystAgent:
     def _pricing_notes(evidence: list[Evidence]) -> str:
         if not evidence:
             return "Evidence is insufficient for a confident pricing conclusion."
-        return "Public evidence includes pricing/plan/subscription/enterprise signals; official pages should be used for final validation."
+        return "Public evidence includes pricing or packaging signals; official pages should be used for final validation."
 
     def _pricing_tiers(self, evidence: list[Evidence]) -> list[str]:
         if not evidence:
             return ["Evidence is insufficient"]
         return [
-            "free/trial signal" if any(word in self._evidence_text(item).lower() for word in ["free", "trial", "免费", "试用"]) else "paid/enterprise signal"
+            "free/trial signal"
+            if any(word in self._evidence_text(item).lower() for word in ["free", "trial", "免费", "试用"])
+            else "paid/enterprise signal"
             for item in evidence[:3]
         ]
+
+    @staticmethod
+    def _selected_dimensions(input_data: AnalystInput) -> list[str]:
+        return [str(item).strip().lower() for item in input_data.selected_dimensions if str(item).strip()]
+
+    @staticmethod
+    def _count_swot_items(swot: SwotAnalysis) -> int:
+        return len(swot.strengths) + len(swot.weaknesses) + len(swot.opportunities) + len(swot.threats)
+
+    def _build_mock_swot(self, competitors: list[str], ids: list[str], selected_dimensions: list[str]) -> SwotAnalysis:
+        dimensions = ", ".join(selected_dimensions[:3]) if selected_dimensions else "feature, pricing, persona"
+        competitor_label = competitors[0] if competitors else None
+        return SwotAnalysis(
+            strengths=[
+                SwotItem(
+                    summary=f"Mock analysis highlights evidence traceability across {dimensions}.",
+                    competitor=competitor_label,
+                    evidence_ids=ids[:1],
+                    confidence=0.55,
+                )
+            ],
+            weaknesses=[
+                SwotItem(
+                    summary="Mock extraction still relies on simplified rules and should be validated with richer evidence.",
+                    competitor=competitor_label,
+                    evidence_ids=ids[:1],
+                    confidence=0.45,
+                )
+            ],
+            opportunities=[
+                SwotItem(
+                    summary=f"Planner-selected dimensions suggest deeper comparison opportunities around {dimensions}.",
+                    competitor=competitor_label,
+                    evidence_ids=ids[:1],
+                    confidence=0.5,
+                )
+            ],
+            threats=[
+                SwotItem(
+                    summary="Public-evidence gaps can still limit confident competitor differentiation.",
+                    competitor=competitor_label,
+                    evidence_ids=ids[:1],
+                    confidence=0.45,
+                )
+            ],
+        )
+
+    def _build_evidence_swot(
+        self,
+        competitors: list[str],
+        selected_dimensions: list[str],
+        *,
+        evidence_by_competitor: dict[str, list[Evidence]],
+        competitor_analysis: dict[str, dict],
+        aggregate_feature_hits: dict[str, list[Evidence]],
+    ) -> SwotAnalysis:
+        strengths: list[SwotItem] = []
+        weaknesses: list[SwotItem] = []
+        opportunities: list[SwotItem] = []
+        threats: list[SwotItem] = []
+        dimension_focus = set(selected_dimensions)
+
+        for feature, feature_evidence in sorted(aggregate_feature_hits.items(), key=lambda item: len(item[1]), reverse=True)[:3]:
+            feature_competitors = {item.competitor for item in feature_evidence if item.competitor}
+            competitor = next(iter(feature_competitors)) if len(feature_competitors) == 1 else None
+            strengths.append(
+                SwotItem(
+                    summary=f"Public evidence repeatedly mentions {feature} capability, making it a visible competitive strength.",
+                    competitor=competitor,
+                    evidence_ids=[item.evidence_id for item in feature_evidence[:3]] or ["insufficient_evidence"],
+                    confidence=min(0.9, 0.55 + 0.08 * len(feature_evidence)),
+                )
+            )
+
+        for competitor in competitors:
+            records = evidence_by_competitor.get(competitor, [])
+            analysis = competitor_analysis.get(competitor, {})
+            record_ids = [item.evidence_id for item in records[:3]] or ["insufficient_evidence"]
+            if not records or analysis.get("insufficient_evidence"):
+                weaknesses.append(
+                    SwotItem(
+                        summary="Relevant public evidence is still too thin for a strong competitor-specific conclusion.",
+                        competitor=competitor,
+                        evidence_ids=record_ids,
+                        confidence=0.35,
+                    )
+                )
+                threats.append(
+                    SwotItem(
+                        summary="Thin evidence coverage increases the risk of over-indexing on a small set of public signals.",
+                        competitor=competitor,
+                        evidence_ids=record_ids,
+                        confidence=0.35,
+                    )
+                )
+                continue
+
+            pricing_records = self._keyword_evidence(records, PRICING_KEYWORDS)
+            feature_labels = analysis.get("features") or []
+            if pricing_records and {"pricing", "positioning"} & dimension_focus:
+                opportunities.append(
+                    SwotItem(
+                        summary="Pricing and packaging signals are visible enough to support a sharper positioning comparison in the next step.",
+                        competitor=competitor,
+                        evidence_ids=[item.evidence_id for item in pricing_records[:3]],
+                        confidence=0.65,
+                    )
+                )
+            if feature_labels and feature_labels[0] != "insufficient evidence":
+                opportunities.append(
+                    SwotItem(
+                        summary=f"Observed signals around {', '.join(feature_labels[:2])} create room for more targeted feature differentiation.",
+                        competitor=competitor,
+                        evidence_ids=record_ids,
+                        confidence=0.6,
+                    )
+                )
+            weaknesses.append(
+                SwotItem(
+                    summary=(
+                        "UX and user-feedback conclusions should stay conservative until more explicit pain-point evidence is collected."
+                        if {"ux", "feedback", "prioritization"} & dimension_focus
+                        else "Current public evidence still leaves some workflow and buyer-fit uncertainty."
+                    ),
+                    competitor=competitor,
+                    evidence_ids=record_ids,
+                    confidence=0.5,
+                )
+            )
+            threats.append(
+                SwotItem(
+                    summary="Cross-competitor conclusions should remain guarded because available evidence may not cover the full product surface.",
+                    competitor=competitor,
+                    evidence_ids=record_ids,
+                    confidence=0.5,
+                )
+            )
+
+        fallback_competitor = competitors[0] if competitors else None
+        if not strengths:
+            strengths.append(
+                SwotItem(
+                    summary="Some relevant evidence exists, but not enough to isolate a durable strength yet.",
+                    competitor=fallback_competitor,
+                    evidence_ids=["insufficient_evidence"],
+                    confidence=0.35,
+                )
+            )
+        if not opportunities:
+            opportunities.append(
+                SwotItem(
+                    summary="Additional official documentation and pricing pages would improve opportunity mapping.",
+                    competitor=fallback_competitor,
+                    evidence_ids=["insufficient_evidence"],
+                    confidence=0.35,
+                )
+            )
+
+        return SwotAnalysis(
+            strengths=strengths[:4],
+            weaknesses=weaknesses[:4],
+            opportunities=opportunities[:4],
+            threats=threats[:4],
+        )
+
+    def _refine_swot_for_rework(
+        self,
+        swot: SwotAnalysis,
+        *,
+        input_data: AnalystInput,
+        evidence_by_competitor: dict[str, list[Evidence]],
+    ) -> tuple[SwotAnalysis, dict]:
+        if input_data.rework_context is None:
+            return swot, {"applied": False, "issues_seen": 0, "adjustments": []}
+
+        metadata = input_data.rework_context.metadata or {}
+        issues = metadata.get("swot_issues", []) if isinstance(metadata.get("swot_issues", []), list) else []
+        if not issues:
+            return swot, {"applied": False, "issues_seen": 0, "adjustments": []}
+
+        refined = swot.model_copy(deep=True)
+        evidence_by_id = {item.evidence_id: item for item in input_data.evidence}
+        adjustments: list[str] = []
+
+        for issue in issues:
+            quadrant = issue.get("quadrant")
+            competitor = issue.get("competitor")
+            error_type = issue.get("error_type")
+            if quadrant not in {"strengths", "weaknesses", "opportunities", "threats"}:
+                continue
+            items = getattr(refined, quadrant)
+            for index, item in enumerate(items):
+                if competitor and item.competitor not in {competitor, None}:
+                    continue
+                supporting_records = [
+                    evidence_by_id[evidence_id]
+                    for evidence_id in item.evidence_ids
+                    if evidence_id in evidence_by_id and evidence_by_id[evidence_id].relevance_level in {"high", "medium"}
+                ]
+                competitor_records = evidence_by_competitor.get(item.competitor or competitor or "", [])
+                if error_type == "swot_missing_support":
+                    fallback_ids = [record.evidence_id for record in competitor_records[:2]] or ["insufficient_evidence"]
+                    items[index] = item.model_copy(
+                        update={
+                            "summary": "Evidence remains too thin for a strong SWOT conclusion after recheck.",
+                            "evidence_ids": fallback_ids,
+                            "confidence": 0.35,
+                        }
+                    )
+                    adjustments.append(f"{quadrant}:{item.competitor or 'overall'} softened due to missing support")
+                elif error_type == "swot_over_inference":
+                    items[index] = item.model_copy(
+                        update={
+                            "summary": f"Conservative follow-up: {item.summary}",
+                            "confidence": min(item.confidence, 0.45),
+                        }
+                    )
+                    adjustments.append(f"{quadrant}:{item.competitor or 'overall'} confidence lowered")
+                elif error_type == "swot_competitor_mismatch":
+                    same_competitor_ids = [record.evidence_id for record in competitor_records[:3]] or ["insufficient_evidence"]
+                    items[index] = item.model_copy(
+                        update={
+                            "evidence_ids": same_competitor_ids,
+                            "confidence": 0.4 if same_competitor_ids == ["insufficient_evidence"] else min(item.confidence, 0.5),
+                        }
+                    )
+                    adjustments.append(f"{quadrant}:{item.competitor or 'overall'} evidence rebound to same competitor")
+                elif error_type == "swot_dimension_gap" and supporting_records:
+                    items[index] = item.model_copy(update={"confidence": min(item.confidence, 0.55)})
+                    adjustments.append(f"{quadrant}:{item.competitor or 'overall'} kept conservative for planner dimension gap")
+
+        return refined, {
+            "applied": bool(adjustments),
+            "issues_seen": len(issues),
+            "adjustments": adjustments,
+            "rework_error_type": input_data.rework_context.error_type,
+        }
